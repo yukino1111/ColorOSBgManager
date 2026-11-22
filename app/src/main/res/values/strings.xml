@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ColorOS 后台管理</string>
+    <string name="xposed_description">基于系统现有名单的 ColorOS 后台全维度运行时管理（HANS 墓碑 / 自启关联 / 电池 Doze / Athena / CPU 限核 / Doze 限网 / 广播限流）</string>
+</resources>
