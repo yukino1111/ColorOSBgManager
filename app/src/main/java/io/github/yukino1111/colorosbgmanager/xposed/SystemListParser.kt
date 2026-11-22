@@ -68,9 +68,10 @@ internal object SystemListParser {
             parseFlexiblePkgXml("/data/oplus/os/recenttask/default_locked_apps.xml") +
             parseFlexiblePkgXml("/data/oplus/os/recenttask/fixed_lock_apps.xml") +
             parseFlexiblePkgXml("/data/oplus/os/battery/recent_lock.xml") +
-            readRuntimeAthenaProtectList(systemClassLoader)
+            readRuntimeRecentLockList(systemClassLoader)
 
-        val recentForbid = parseFlexiblePkgXml("/data/oplus/os/recenttask/forbid_lock_apps.xml")
+        val recentForbid = parseFlexiblePkgXml("/data/oplus/os/recenttask/forbid_lock_apps.xml") +
+            readLauncherForbidLockList(systemContext)
 
         val cpuLimitConfig = parseCpuLimitConfig("/data/oplus/os/bpm/sys_cpulimit_config.xml")
         val skipBroadcastWhite = parseTextTagXml("/data/oplus/os/config/sys_ams_skipbroadcast.xml", setOf("wl")) +
@@ -531,14 +532,79 @@ internal object SystemListParser {
         return result
     }
 
-    private fun readRuntimeAthenaProtectList(classLoader: ClassLoader?): Set<String> {
+    private fun readRuntimeRecentLockList(classLoader: ClassLoader?): Set<String> {
         val cl = classLoader ?: return emptySet()
-        return runCatching {
-            val clazz = cl.loadClass("com.android.server.wm.OplusAthenaManager")
-            val instance = clazz.getMethod("getInstance").invoke(null) ?: return emptySet()
-            val rawList = clazz.getMethod("getProtectList").invoke(instance) as? List<*> ?: return emptySet()
-            rawList.mapNotNull { normalizePackageName(it as? String) }.toSet()
-        }.getOrDefault(emptySet())
+        val out = LinkedHashSet<String>()
+        runCatching {
+            val clazz = cl.loadClass("com.android.server.OplusListManagerImpl")
+            val instance = clazz.getMethod("getInstance").invoke(null) ?: return@runCatching
+            val getConfigInfo = runCatching {
+                clazz.getMethod("getConfigInfo", String::class.java, Int::class.javaPrimitiveType)
+            }.getOrNull()
+            if (getConfigInfo != null) {
+                for (configKey in listOf("recent_lock_list", "recent_super_lock_list")) {
+                    val bundle = runCatching {
+                        getConfigInfo.invoke(instance, configKey, 0) as? Bundle
+                    }.getOrNull() ?: continue
+                    bundle.getStringArrayList(configKey)?.forEach { entry ->
+                        normalizePackageName(entry)?.let(out::add)
+                    }
+                }
+            }
+            val lockRaw = clazz.getMethod("getRecentLockListWithUserIdAsUser", Int::class.javaPrimitiveType)
+                .invoke(instance, 0) as? List<*>
+            lockRaw?.forEach { entry ->
+                val rawPkg = (entry as? android.util.Pair<*, *>)?.first as? String ?: entry as? String
+                normalizePackageName(rawPkg)?.let(out::add)
+            }
+        }
+        runCatching {
+            val cfgClass = cl.loadClass("com.oplus.util.OplusCommonConfig")
+            val cfg = cfgClass.getMethod("getInstance").invoke(null) ?: return@runCatching
+            val getConfigInfo = runCatching {
+                cfgClass.getMethod("getConfigInfo", String::class.java, Int::class.javaPrimitiveType)
+            }.getOrNull()
+            val getConfigInfoAsUser = runCatching {
+                cfgClass.getMethod(
+                    "getConfigInfoAsUser",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                )
+            }.getOrNull()
+            for (configKey in listOf("recent_lock_list", "recent_super_lock_list")) {
+                val b1 = getConfigInfo?.let {
+                    runCatching { it.invoke(cfg, configKey, 1) as? Bundle }.getOrNull()
+                }
+                b1?.getStringArrayList(configKey)?.forEach { entry ->
+                    normalizePackageName(entry)?.let(out::add)
+                }
+                val b2 = getConfigInfoAsUser?.let {
+                    runCatching { it.invoke(cfg, configKey, 1, 0) as? Bundle }.getOrNull()
+                }
+                b2?.getStringArrayList(configKey)?.forEach { entry ->
+                    normalizePackageName(entry)?.let(out::add)
+                }
+            }
+        }
+        return out
+    }
+
+    private fun readLauncherForbidLockList(context: Context?): Set<String> {
+        val pm = context?.packageManager ?: return emptySet()
+        val out = LinkedHashSet<String>()
+        listOf("com.android.launcher", "com.oppo.launcher").forEach { launcherPkg ->
+            runCatching {
+                val res = pm.getResourcesForApplication(launcherPkg)
+                val id = res.getIdentifier("forbid_lock_applications", "array", launcherPkg)
+                if (id != 0) {
+                    res.getStringArray(id).forEach { raw ->
+                        normalizePackageName(raw)?.let(out::add)
+                    }
+                }
+            }
+        }
+        return out
     }
 
     private fun parseLineList(path: String): Set<String> {
@@ -556,7 +622,7 @@ internal object SystemListParser {
     private fun normalizePackageName(raw: String?): String? {
         val trimmed = raw?.trim().orEmpty()
         if (trimmed.isEmpty() || trimmed.contains(' ')) return null
-        val pkg = trimmed.substringBefore(':')
+        val pkg = trimmed.substringBefore('#').substringBefore(':')
         return pkg.takeIf { it.contains('.') && !it.startsWith(".") && !it.endsWith(".") }
     }
 

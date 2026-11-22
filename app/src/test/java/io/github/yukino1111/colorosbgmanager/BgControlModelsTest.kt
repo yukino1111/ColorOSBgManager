@@ -1,6 +1,7 @@
 package io.github.yukino1111.colorosbgmanager
 
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
+import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
 import io.github.yukino1111.colorosbgmanager.model.NativeListKind
 import io.github.yukino1111.colorosbgmanager.model.NativeSource
 import io.github.yukino1111.colorosbgmanager.model.NativeState
@@ -98,8 +99,12 @@ class BgControlModelsTest {
         assertEquals(NativeSource.CLOUD_DEFAULT, cloudTrim.source)
 
         assertEquals(NativeState.WHITELISTED, snapshot.nativeStateFor("com.cpu.white", BgSubsystem.CPU_LIMIT))
-        assertEquals(NativeState.NEUTRAL, snapshot.nativeStateFor("com.cpu.viphbg", BgSubsystem.CPU_LIMIT))
-        assertEquals(NativeState.BLACKLISTED, snapshot.nativeStateFor("com.black.app", BgSubsystem.CPU_LIMIT))
+        val vipHbgRes = snapshot.nativeResolutionFor("com.cpu.viphbg", BgSubsystem.CPU_LIMIT)
+        assertEquals(NativeState.BLACKLISTED, vipHbgRes.state)
+        assertEquals(NativeCpuTier.HBG, vipHbgRes.cpuTier)
+        val cpuBlackRes = snapshot.nativeResolutionFor("com.black.app", BgSubsystem.CPU_LIMIT)
+        assertEquals(NativeState.BLACKLISTED, cpuBlackRes.state)
+        assertEquals(NativeCpuTier.LBG, cpuBlackRes.cpuTier)
         assertEquals(NativeState.WHITELISTED, snapshot.nativeStateFor("com.net.white", BgSubsystem.DOZE_NET))
         assertEquals(NativeState.NEUTRAL, snapshot.nativeStateFor("com.net.cloud.off", BgSubsystem.DOZE_NET))
         assertFalse(snapshot.isListActive(NativeListKind.DOZE_NET_CLOUD_RESTRICT))
@@ -109,5 +114,21 @@ class BgControlModelsTest {
         assertEquals(NativeSource.SYSTEM_USER, localNet.source)
         assertEquals(NativeState.WHITELISTED, snapshot.nativeStateFor("com.br.white", BgSubsystem.BROADCAST_RESTRICT))
         assertEquals(NativeState.WHITELISTED, snapshot.nativeStateFor("com.locked.app", BgSubsystem.ATHENA_RECENT))
+
+        val disabledSnapshot = snapshot.copy(
+            listActive = mapOf(
+                NativeListKind.HANS_SYSTEM_WHITE to false,
+                NativeListKind.HANS_SYS_BLACK to false,
+                NativeListKind.ATHENA_TRIM_WHITE to false,
+                NativeListKind.CPULIMIT_WHITE to false,
+                NativeListKind.CPULIMIT_VIP_HBG to false,
+            ),
+        )
+        assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.cloud.white", BgSubsystem.HANS_FREEZE))
+        assertEquals(NativeState.WHITELISTED, disabledSnapshot.nativeStateFor("com.user.white", BgSubsystem.HANS_FREEZE))
+        assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.black.app", BgSubsystem.HANS_FREEZE))
+        assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.trim.cloud", BgSubsystem.ATHENA_RECENT))
+        assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.cpu.white", BgSubsystem.CPU_LIMIT))
+        assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.cpu.viphbg", BgSubsystem.CPU_LIMIT))
     }
 }
