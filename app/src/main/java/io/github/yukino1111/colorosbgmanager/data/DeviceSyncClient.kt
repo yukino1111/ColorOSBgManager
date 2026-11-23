@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class InstalledAppEntry(
     val label: String,
@@ -73,7 +74,7 @@ data class BgMasterUiState(
     val statusMessage: String? = null,
 )
 
-class DeviceSyncClient(private val context: Context) {
+class DeviceSyncClient private constructor(private val context: Context) {
 
     private val uiPrefs: SharedPreferences =
         context.getSharedPreferences(UI_PREF_NAME, Context.MODE_PRIVATE)
@@ -88,11 +89,14 @@ class DeviceSyncClient(private val context: Context) {
     )
     val state: StateFlow<BgMasterUiState> = _state.asStateFlow()
 
+    @Volatile
     private var remotePrefs: SharedPreferences? = null
+
+    private val started = AtomicBoolean(false)
 
     private val serviceListener = object : XposedServiceHelper.OnServiceListener {
         override fun onServiceBind(service: XposedService) {
-            val prefs = service.getRemotePreferences(RulesCodec.PREF_NAME)
+            val prefs = runCatching { service.getRemotePreferences(RulesCodec.PREF_NAME) }.getOrNull() ?: return
             remotePrefs = prefs
             val rules = RulesCodec.decodeRules(prefs.getStringSet(RulesCodec.KEY_RULES_SET, emptySet()))
             val freezeSet = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_FREEZE_PKGS_SET, emptySet()))
@@ -117,7 +121,9 @@ class DeviceSyncClient(private val context: Context) {
     }
 
     fun start() {
-        XposedServiceHelper.registerListener(serviceListener)
+        if (started.compareAndSet(false, true)) {
+            XposedServiceHelper.registerListener(serviceListener)
+        }
     }
 
     fun toggleLanguage() {
@@ -559,6 +565,15 @@ class DeviceSyncClient(private val context: Context) {
         private const val UI_PREF_NAME = "ui_prefs"
         private const val KEY_LANGUAGE = "app_language"
         private const val KEY_SHORTCUT_TOKEN = "shortcut_secret_token"
+
+        @Volatile
+        private var instance: DeviceSyncClient? = null
+
+        fun getInstance(context: Context): DeviceSyncClient {
+            return instance ?: synchronized(this) {
+                instance ?: DeviceSyncClient(context.applicationContext).also { instance = it }
+            }
+        }
 
         internal fun getOrCreateShortcutToken(ctx: Context): String {
             val prefs = ctx.getSharedPreferences(UI_PREF_NAME, Context.MODE_PRIVATE)

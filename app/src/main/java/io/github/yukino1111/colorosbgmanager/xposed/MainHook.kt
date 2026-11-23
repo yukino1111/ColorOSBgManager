@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.os.Binder
 import android.os.Bundle
@@ -24,6 +25,7 @@ import android.util.Log
 import io.github.yukino1111.colorosbgmanager.BuildConfig
 import io.github.yukino1111.colorosbgmanager.model.AppUserKey
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
+import io.github.yukino1111.colorosbgmanager.model.DozePolicyHelper
 import io.github.yukino1111.colorosbgmanager.model.GlobalRuleFlags
 import io.github.yukino1111.colorosbgmanager.model.PkgRuntimeStatus
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
@@ -72,6 +74,9 @@ class MainHook : XposedModule() {
     @Volatile
     private var bootCompleted: Boolean = false
 
+    @Volatile
+    private var powerWhitelistHooked: Boolean = false
+
     private var remotePrefs: SharedPreferences? = null
     private val hooked = AtomicBoolean(false)
     private val settingsBridgeHooked = AtomicBoolean(false)
@@ -79,6 +84,7 @@ class MainHook : XposedModule() {
     private val screenReceiverRegistered = AtomicBoolean(false)
     private val hookStatus = ConcurrentHashMap<String, Boolean>()
     private val uidPkgCache = ConcurrentHashMap<Int, List<String>>()
+    private val pkgAppIdCache = ConcurrentHashMap<String, Int>()
 
     private val eventLock = Any()
     private val eventBuffer = ArrayDeque<RuntimeEvent>(MAX_EVENTS)
@@ -776,8 +782,80 @@ class MainHook : XposedModule() {
                     }
                 }
             }
+            listOf(
+                "isAppOnWhitelistInternal",
+                "isAppOnExceptIdleWhitelistInternal",
+            ).forEach { methodName ->
+                runCatching {
+                    hook(idleClass.getDeclaredMethod(methodName, Int::class.javaPrimitiveType)).intercept { chain ->
+                        if (deviceIdleController == null) deviceIdleController = chain.thisObject
+                        val appId = chain.getArg(0) as Int
+                        when (resolveDozeModeForAppId(appId)) {
+                            PolicyMode.FORCE_ALLOW -> true
+                            PolicyMode.FORCE_RESTRICT,
+                            PolicyMode.FORCE_RESTRICT_HBG -> false
+                            PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
+                        }
+                    }
+                }
+            }
+            listOf(
+                "getAppIdWhitelistInternal",
+                "getAppIdWhitelistExceptIdleInternal",
+                "getAppIdUserWhitelistInternal",
+                "getAppIdWhitelist",
+                "getAppIdWhitelistExceptIdle",
+                "getAppIdUserWhitelist",
+            ).forEach { methodName ->
+                runCatching {
+                    val m = idleClass.getDeclaredMethod(methodName)
+                    if (m.returnType == IntArray::class.java) {
+                        hook(m).intercept { chain ->
+                            val orig = chain.proceed() as? IntArray ?: return@intercept null
+                            adjustDozeAppIds(orig)
+                        }
+                    }
+                }
+            }
+            listOf(
+                "getFullPowerWhitelistInternal",
+                "getFullPowerWhitelistExceptIdleInternal",
+                "getUserPowerWhitelistInternal",
+            ).forEach { methodName ->
+                runCatching {
+                    val m = idleClass.getDeclaredMethod(methodName)
+                    if (m.returnType == Array<String>::class.java) {
+                        hook(m).intercept { chain ->
+                            val orig = chain.proceed() as? Array<*> ?: return@intercept null
+                            adjustDozePackages(orig)
+                        }
+                    }
+                }
+            }
+            runCatching {
+                val updateMethod = idleClass.getDeclaredMethod("updateWhitelistAppIdsLocked")
+                hook(updateMethod).intercept { chain ->
+                    if (deviceIdleController == null) deviceIdleController = chain.thisObject
+                    val result = chain.proceed()
+                    applyInMemoryDozeAppIds(chain.thisObject)
+                    result
+                }
+            }
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook DeviceIdleController failed", it) }
+
+        runCatching {
+            val pmsLocalClass = cl.loadClass("com.android.server.power.PowerManagerService\$LocalService")
+            hook(pmsLocalClass.getDeclaredMethod("setDeviceIdleWhitelist", IntArray::class.java)).intercept { chain ->
+                val orig = chain.getArg(0) as? IntArray
+                if (orig != null) {
+                    chain.proceed(arrayOf(adjustDozeAppIds(orig)))
+                } else {
+                    chain.proceed()
+                }
+            }
+            powerWhitelistHooked = true
+        }.onFailure { logMsg(Log.WARN, "Hook PowerManagerService\$LocalService.setDeviceIdleWhitelist skipped", it) }
 
         runCatching {
             val standbyClass = cl.loadClass("com.android.server.usage.AppStandbyController")
@@ -1558,60 +1636,108 @@ class MainHook : XposedModule() {
         workerHandler.postDelayed(syncDozeRunnable, 350L)
     }
 
-    private fun syncBatteryDozeState(): Int {
-        val dic = deviceIdleController ?: return 0
-        val currentRules = rules
-        val allowSet = LinkedHashSet<String>()
-        val restrictCandidate = LinkedHashSet<String>()
-        for ((target, map) in currentRules) {
-            when (map[BgSubsystem.BATTERY_DOZE]) {
-                PolicyMode.FORCE_ALLOW -> allowSet.add(target.packageName)
-                PolicyMode.FORCE_RESTRICT, PolicyMode.FORCE_RESTRICT_HBG -> restrictCandidate.add(target.packageName)
-                else -> {}
-            }
-        }
-        val allowPkgs = allowSet.toList()
-        val restrictPkgs = restrictCandidate.filter { it !in allowSet }
+    private fun syncBatteryDozeState() {
+        val dic = deviceIdleController ?: return
+        val updateMethod = findDeclaredMethod(dic.javaClass, "updateWhitelistAppIdsLocked") ?: return
+        val reportMethod = findDeclaredMethod(dic.javaClass, "reportPowerSaveWhitelistChangedLocked")
         val token = Binder.clearCallingIdentity()
-        var changed = 0
         try {
-            val userMap = runCatching {
-                findDeclaredField(dic.javaClass, "mPowerSaveWhitelistUserApps")?.get(dic) as? Map<*, *>
-            }.getOrNull()
-
-            val toAdd = allowPkgs.filter { userMap == null || !userMap.containsKey(it) }
-            if (toAdd.isNotEmpty()) {
-                runCatching {
-                    val m = dic.javaClass.getDeclaredMethod("addPowerSaveWhitelistAppsInternal", List::class.java)
-                    m.isAccessible = true
-                    val added = (m.invoke(dic, toAdd) as? Int) ?: 0
-                    changed += added
-                    toAdd.forEach { recordEvent(it, BgSubsystem.BATTERY_DOZE, "sync_doze_add", "DeviceIdle") }
-                }.onFailure { log(Log.ERROR, TAG, "sync addPowerSaveWhitelistAppsInternal failed", it) }
-            }
-
-            val toRemove = restrictPkgs.filter { userMap == null || userMap.containsKey(it) }
-            if (toRemove.isNotEmpty()) {
-                val rm = runCatching {
-                    dic.javaClass.getDeclaredMethod("removePowerSaveWhitelistAppInternal", String::class.java).apply {
-                        isAccessible = true
-                    }
-                }.getOrNull()
-                if (rm != null) {
-                    for (pkg in toRemove) {
-                        runCatching {
-                            if (rm.invoke(dic, pkg) as? Boolean == true) {
-                                changed++
-                                recordEvent(pkg, BgSubsystem.BATTERY_DOZE, "sync_doze_remove", "DeviceIdle")
-                            }
-                        }
-                    }
-                }
+            synchronized(dic) {
+                runCatching { updateMethod.invoke(dic) }
+                    .onFailure { log(Log.ERROR, TAG, "sync updateWhitelistAppIdsLocked failed", it) }
+                runCatching { reportMethod?.invoke(dic) }
             }
         } finally {
             Binder.restoreCallingIdentity(token)
         }
-        return changed
+    }
+
+    private fun applyInMemoryDozeAppIds(dic: Any?) {
+        if (dic == null) return
+        val fieldNames = listOf(
+            "mPowerSaveWhitelistAllAppIds",
+            "mPowerSaveWhitelistExceptIdleAppIds",
+            "mPowerSaveWhitelistUserAppIds",
+        )
+        var adjustedAll: IntArray? = null
+        for (name in fieldNames) {
+            val field = findDeclaredField(dic.javaClass, name) ?: continue
+            val orig = runCatching { field.get(dic) as? IntArray }.getOrNull() ?: continue
+            val adjusted = adjustDozeAppIds(orig)
+            runCatching { field.set(dic, adjusted) }
+            if (name == "mPowerSaveWhitelistAllAppIds") {
+                adjustedAll = adjusted
+            }
+        }
+        if (!powerWhitelistHooked && adjustedAll != null) {
+            runCatching {
+                val pmi = findDeclaredField(dic.javaClass, "mLocalPowerManager")?.get(dic) ?: return@runCatching
+                val setter = findDeclaredMethod(pmi.javaClass, "setDeviceIdleWhitelist", IntArray::class.java)
+                    ?: pmi.javaClass.getMethod("setDeviceIdleWhitelist", IntArray::class.java)
+                setter.invoke(pmi, adjustedAll)
+            }
+        }
+    }
+
+    private fun collectDozeOverrideSets(): Pair<Set<String>, Set<String>> {
+        val allowPkgs = LinkedHashSet<String>()
+        val restrictPkgs = LinkedHashSet<String>()
+        for ((target, map) in rules) {
+            when (map[BgSubsystem.BATTERY_DOZE]) {
+                PolicyMode.FORCE_ALLOW -> allowPkgs.add(target.packageName)
+                PolicyMode.FORCE_RESTRICT,
+                PolicyMode.FORCE_RESTRICT_HBG -> restrictPkgs.add(target.packageName)
+                else -> {}
+            }
+        }
+        return allowPkgs to restrictPkgs
+    }
+
+    private fun adjustDozeAppIds(orig: IntArray?): IntArray {
+        val (allowPkgs, restrictPkgs) = collectDozeOverrideSets()
+        if (allowPkgs.isEmpty() && restrictPkgs.isEmpty()) {
+            return orig ?: IntArray(0)
+        }
+        val allowIds = allowPkgs.mapNotNullTo(LinkedHashSet()) { pkg ->
+            resolveAppIdForPkg(pkg).takeIf { it >= 10000 }
+        }
+        val restrictIds = restrictPkgs.mapNotNullTo(LinkedHashSet()) { pkg ->
+            resolveAppIdForPkg(pkg).takeIf { it >= 10000 }
+        }
+        return DozePolicyHelper.adjustWhitelistAppIds(orig, allowIds, restrictIds)
+    }
+
+    private fun adjustDozePackages(orig: Array<*>?): Array<String> {
+        val (allowPkgs, restrictPkgs) = collectDozeOverrideSets()
+        val installedAllow = allowPkgs.filterTo(LinkedHashSet()) { resolveAppIdForPkg(it) >= 10000 }
+        return DozePolicyHelper.adjustWhitelistPackages(orig, installedAllow, restrictPkgs)
+    }
+
+    private fun resolveAppIdForPkg(pkg: String): Int {
+        pkgAppIdCache[pkg]?.let { return it }
+        val ctx = resolveSystemContext() ?: return -1
+        val pm = ctx.packageManager ?: return -1
+        val uid = runCatching { pm.getPackageUid(pkg, 0) }.getOrNull()
+            ?: runCatching { pm.getPackageUid(pkg, MATCH_ANY_USER_FLAG) }.getOrNull()
+            ?: return -1
+        val appId = MultiUserPackageHelper.appIdOfUid(uid)
+        if (appId >= 10000) {
+            pkgAppIdCache[pkg] = appId
+        }
+        return appId
+    }
+
+    private fun resolveDozeModeForAppId(appId: Int): PolicyMode {
+        if (appId < 10000) return PolicyMode.FOLLOW_SYSTEM
+        var hasRestrict = false
+        for ((key, map) in rules) {
+            val mode = map[BgSubsystem.BATTERY_DOZE] ?: continue
+            if (resolveAppIdForPkg(key.packageName) == appId) {
+                if (mode == PolicyMode.FORCE_ALLOW) return PolicyMode.FORCE_ALLOW
+                if (mode.isRestrict) hasRestrict = true
+            }
+        }
+        return if (hasRestrict) PolicyMode.FORCE_RESTRICT else PolicyMode.FOLLOW_SYSTEM
     }
 
     private fun forceStopPackageDirect(pkg: String, userId: Int): Boolean {
@@ -1693,17 +1819,22 @@ class MainHook : XposedModule() {
         }.getOrNull() ?: -1
 
         val dic = deviceIdleController
-        val realDozeWhitelisted = if (dic != null) {
-            runCatching {
-                val userMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistUserApps")?.get(dic) as? Map<*, *>
-                val sysMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistSystemApps")?.get(dic) as? Map<*, *>
-                (userMap?.containsKey(pkg) == true) || (sysMap?.containsKey(pkg) == true)
-            }.getOrDefault(false)
-        } else {
-            runCatching {
-                val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                pm?.isIgnoringBatteryOptimizations(pkg) == true
-            }.getOrDefault(false)
+        val realDozeWhitelisted = when (modeForFallback(pkg, BgSubsystem.BATTERY_DOZE)) {
+            PolicyMode.FORCE_ALLOW -> true
+            PolicyMode.FORCE_RESTRICT,
+            PolicyMode.FORCE_RESTRICT_HBG -> false
+            PolicyMode.FOLLOW_SYSTEM -> if (dic != null) {
+                runCatching {
+                    val userMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistUserApps")?.get(dic) as? Map<*, *>
+                    val sysMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistSystemApps")?.get(dic) as? Map<*, *>
+                    (userMap?.containsKey(pkg) == true) || (sysMap?.containsKey(pkg) == true)
+                }.getOrDefault(false)
+            } else {
+                runCatching {
+                    val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                    pm?.isIgnoringBatteryOptimizations(pkg) == true
+                }.getOrDefault(false)
+            }
         }
 
         val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
@@ -1779,6 +1910,17 @@ class MainHook : XposedModule() {
         while (cur != null) {
             runCatching {
                 return cur.getDeclaredField(name).apply { isAccessible = true }
+            }
+            cur = cur.superclass
+        }
+        return null
+    }
+
+    private fun findDeclaredMethod(clazz: Class<*>, name: String, vararg paramTypes: Class<*>): Method? {
+        var cur: Class<*>? = clazz
+        while (cur != null) {
+            runCatching {
+                return cur.getDeclaredMethod(name, *paramTypes).apply { isAccessible = true }
             }
             cur = cur.superclass
         }
@@ -2028,5 +2170,6 @@ class MainHook : XposedModule() {
         private const val STANDBY_BUCKET_EXEMPTED = 5
         private const val STANDBY_BUCKET_RARE = 40
         private const val SKIP_REASON_ALLOW = "bgmanager-allow"
+        private const val MATCH_ANY_USER_FLAG = 0x00400000
     }
 }

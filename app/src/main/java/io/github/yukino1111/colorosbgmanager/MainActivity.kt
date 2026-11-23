@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        syncClient = DeviceSyncClient(applicationContext)
+        syncClient = DeviceSyncClient.getInstance(applicationContext)
         syncClient.start()
 
         lifecycleScope.launch {

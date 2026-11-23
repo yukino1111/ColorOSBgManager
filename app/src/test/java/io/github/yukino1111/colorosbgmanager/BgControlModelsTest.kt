@@ -5,6 +5,7 @@ import io.github.yukino1111.colorosbgmanager.model.AppUserKey
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.BridgeAppEntry
 import io.github.yukino1111.colorosbgmanager.model.DeviceUserInfo
+import io.github.yukino1111.colorosbgmanager.model.DozePolicyHelper
 import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
 import io.github.yukino1111.colorosbgmanager.model.NativeListKind
 import io.github.yukino1111.colorosbgmanager.model.NativeSource
@@ -232,5 +233,53 @@ class BgControlModelsTest {
         assertEquals(923648L, parsed[2].resKb)
         assertEquals(28904, parsed[3].pid)
         assertTrue(parsed[3].isKernelThread)
+    }
+
+    @Test
+    fun dozePolicyHelper_restoresOriginalSystemWhitelistOnFollowSystem() {
+        val systemIds = intArrayOf(10100, 10200)
+        val systemPkgs = arrayOf("com.sys.allow", "com.user.allow")
+
+        val afterAllowIds = DozePolicyHelper.adjustWhitelistAppIds(
+            orig = systemIds,
+            allowIds = setOf(10300),
+            restrictIds = emptySet(),
+        )
+        assertEquals(listOf(10100, 10200, 10300), afterAllowIds.toList())
+
+        val afterAllowToFollowIds = DozePolicyHelper.adjustWhitelistAppIds(
+            orig = systemIds,
+            allowIds = emptySet(),
+            restrictIds = emptySet(),
+        )
+        assertEquals(listOf(10100, 10200), afterAllowToFollowIds.toList())
+
+        val afterRestrictIds = DozePolicyHelper.adjustWhitelistAppIds(
+            orig = systemIds,
+            allowIds = emptySet(),
+            restrictIds = setOf(10200),
+        )
+        assertEquals(listOf(10100), afterRestrictIds.toList())
+
+        val afterRestrictToFollowIds = DozePolicyHelper.adjustWhitelistAppIds(
+            orig = systemIds,
+            allowIds = emptySet(),
+            restrictIds = emptySet(),
+        )
+        assertEquals(listOf(10100, 10200), afterRestrictToFollowIds.toList())
+
+        val adjustedPkgs = DozePolicyHelper.adjustWhitelistPackages(
+            orig = systemPkgs,
+            allowPkgs = setOf("com.app.new"),
+            restrictPkgs = setOf("com.user.allow"),
+        )
+        assertEquals(listOf("com.sys.allow", "com.app.new"), adjustedPkgs.toList())
+
+        val restoredPkgs = DozePolicyHelper.adjustWhitelistPackages(
+            orig = systemPkgs,
+            allowPkgs = emptySet(),
+            restrictPkgs = emptySet(),
+        )
+        assertEquals(listOf("com.sys.allow", "com.user.allow"), restoredPkgs.toList())
     }
 }

@@ -1413,6 +1413,13 @@ private fun AppDetailPage(
         }
     }
 
+    LaunchedEffect(pkgRules[BgSubsystem.BATTERY_DOZE]) {
+        if (runtime != null && state.snapshot.serverInjected) {
+            kotlinx.coroutines.delay(200)
+            onLoadRuntime()
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -1477,27 +1484,115 @@ private fun AppDetailPage(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (state.snapshot.serverInjected) {
+                item {
+                    RuntimeStatusCard(runtime = runtime)
+                }
+            }
+
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = { onSetAll(PolicyMode.FORCE_ALLOW) },
-                        modifier = Modifier.weight(1f),
+                ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text(strings.allowAll)
-                    }
-                    FilledTonalButton(
-                        onClick = { onSetAll(PolicyMode.FOLLOW_SYSTEM) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(strings.restoreDefault)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = { onSetAll(PolicyMode.FORCE_ALLOW) },
+                                modifier = Modifier.weight(1f),
+                                shapes = ButtonDefaults.shapes(),
+                            ) {
+                                Text(strings.allowAll)
+                            }
+                            FilledTonalButton(
+                                onClick = { onSetAll(PolicyMode.FOLLOW_SYSTEM) },
+                                modifier = Modifier.weight(1f),
+                                shapes = ButtonDefaults.shapes(),
+                            ) {
+                                Text(strings.restoreDefault)
+                            }
+                        }
+
+                        BgSubsystem.entries.forEach { sub ->
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            )
+                            val nativeRes = state.snapshot.nativeResolutionFor(packageName, sub)
+                            val currentMode = pkgRules[sub] ?: PolicyMode.FOLLOW_SYSTEM
+
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            strings.subsystemTitle(sub),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                        val effectiveText = when (currentMode) {
+                                            PolicyMode.FOLLOW_SYSTEM -> when (nativeRes.state) {
+                                                NativeState.WHITELISTED,
+                                                NativeState.BLACKLISTED -> "${strings.currentPrefix}${strings.formatNativeTag(nativeRes)}"
+                                                NativeState.NEUTRAL -> strings.currentNeutral
+                                            }
+                                            else -> strings.effectiveOverrideText(currentMode, sub)
+                                        }
+                                        Text(
+                                            effectiveText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (currentMode != PolicyMode.FOLLOW_SYSTEM) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            fontWeight = if (currentMode != PolicyMode.FOLLOW_SYSTEM) FontWeight.SemiBold else FontWeight.Normal,
+                                        )
+                                    }
+                                    if (nativeRes.state == NativeState.NEUTRAL) {
+                                        StatusPill(text = strings.notInNativeList, active = false)
+                                    } else {
+                                        NativeOutlinedBadge(
+                                            text = strings.formatNativeTag(nativeRes),
+                                            isErrorBadge = nativeRes.state == NativeState.BLACKLISTED &&
+                                                nativeRes.cpuTier != NativeCpuTier.HBG,
+                                        )
+                                    }
+                                }
+                                Text(
+                                    strings.subsystemDesc(sub),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                val modes = sub.supportedModes()
+                                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                    modes.forEachIndexed { idx, mode ->
+                                        SegmentedButton(
+                                            selected = currentMode == mode,
+                                            onClick = { onSetRule(sub, mode) },
+                                            shape = SegmentedButtonDefaults.itemShape(idx, modes.size),
+                                            label = {
+                                                Text(
+                                                    strings.policyModeLabel(mode, sub, compact = modes.size > 3),
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
             if (state.snapshot.serverInjected) {
-                item {
-                    RuntimeStatusCard(runtime = runtime)
-                }
                 item {
                     FreezeControlCard(
                         isSuspended = isSuspended,
@@ -1511,93 +1606,11 @@ private fun AppDetailPage(
                         onPinShortcut = onPinShortcut,
                     )
                 }
-            }
-
-            items(BgSubsystem.entries) { sub ->
-                val nativeRes = state.snapshot.nativeResolutionFor(packageName, sub)
-                val currentMode = pkgRules[sub] ?: PolicyMode.FOLLOW_SYSTEM
-
-                ElevatedCard(shape = RoundedCornerShape(20.dp)) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(strings.subsystemTitle(sub), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                val effectiveText = when (currentMode) {
-                                    PolicyMode.FOLLOW_SYSTEM -> when (nativeRes.state) {
-                                        NativeState.WHITELISTED,
-                                        NativeState.BLACKLISTED -> "${strings.currentPrefix}${strings.formatNativeTag(nativeRes)}"
-                                        NativeState.NEUTRAL -> strings.currentNeutral
-                                    }
-                                    else -> strings.effectiveOverrideText(currentMode, sub)
-                                }
-                                Text(
-                                    effectiveText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (currentMode != PolicyMode.FOLLOW_SYSTEM) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    fontWeight = if (currentMode != PolicyMode.FOLLOW_SYSTEM) FontWeight.SemiBold else FontWeight.Normal,
-                                )
-                            }
-                            if (nativeRes.state == NativeState.NEUTRAL) {
-                                StatusPill(text = strings.notInNativeList, active = false)
-                            } else {
-                                NativeOutlinedBadge(
-                                    text = strings.formatNativeTag(nativeRes),
-                                    isErrorBadge = nativeRes.state == NativeState.BLACKLISTED &&
-                                        nativeRes.cpuTier != NativeCpuTier.HBG,
-                                )
-                            }
-                        }
-                        Text(
-                            strings.subsystemDesc(sub),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        val modes = sub.supportedModes()
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            modes.forEachIndexed { idx, mode ->
-                                SegmentedButton(
-                                    selected = currentMode == mode,
-                                    onClick = { onSetRule(sub, mode) },
-                                    shape = SegmentedButtonDefaults.itemShape(idx, modes.size),
-                                    label = {
-                                        Text(
-                                            strings.policyModeLabel(mode, sub, compact = modes.size > 3),
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (state.snapshot.serverInjected) {
-                item {
-                    Text(
-                        strings.sectionAppEvents,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
                 item {
                     RuntimeEventsCard(
                         events = appEvents.take(25),
                         showPackageName = false,
+                        title = strings.sectionAppEvents,
                     )
                 }
             }
@@ -1649,7 +1662,7 @@ private fun FreezeControlCard(
     )
 
     ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(20.dp),
         modifier = Modifier.animateContentSize(animationSpec = motionScheme.defaultSpatialSpec()),
     ) {
         Column(
@@ -1663,17 +1676,11 @@ private fun FreezeControlCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(Icons.Rounded.AcUnit, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text(
-                        strings.sectionFreezeControl,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
+                Text(
+                    strings.sectionFreezeControl,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 StatusPill(
                     text = if (isSuspended) strings.freezeStatusSuspended else strings.freezeStatusActive,
                     active = !isSuspended,
@@ -1772,8 +1779,6 @@ private fun FreezeControlCard(
                     onClick = { onSetSuspended(!isSuspended) },
                     shapes = ButtonDefaults.shapes(),
                 ) {
-                    Icon(Icons.Rounded.AcUnit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
                     Text(if (isSuspended) strings.actionUnfreezeNow else strings.actionFreezeNow)
                 }
                 Button(
@@ -1855,6 +1860,7 @@ private fun RuntimeStatusCard(
 private fun RuntimeEventsCard(
     events: List<RuntimeEvent>,
     showPackageName: Boolean,
+    title: String? = null,
 ) {
     val strings = LocalAppStrings.current
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
@@ -1865,6 +1871,13 @@ private fun RuntimeEventsCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (title != null) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             if (events.isEmpty()) {
                 Text(
                     strings.noRecentEvents,

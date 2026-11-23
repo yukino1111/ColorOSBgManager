@@ -2,6 +2,7 @@ package io.github.yukino1111.colorosbgmanager.model
 
 import android.content.SharedPreferences
 import android.os.Bundle
+import java.util.TreeSet
 
 enum class BgSubsystem(
     val key: String,
@@ -619,4 +620,40 @@ object RulesCodec {
         verboseLog = prefs.getBoolean(KEY_VERBOSE_LOG, false),
         autoFreezeDelaySec = normalizeAutoFreezeDelaySec(prefs.getInt(KEY_AUTO_FREEZE_DELAY_SEC, 60)),
     )
+}
+
+object DozePolicyHelper {
+    fun adjustWhitelistAppIds(
+        orig: IntArray?,
+        allowIds: Set<Int>,
+        restrictIds: Set<Int>,
+    ): IntArray {
+        if (allowIds.isEmpty() && restrictIds.isEmpty()) {
+            return orig ?: IntArray(0)
+        }
+        val result = TreeSet<Int>()
+        orig?.forEach { id ->
+            if (id !in restrictIds || id in allowIds) {
+                result.add(id)
+            }
+        }
+        result.addAll(allowIds)
+        return result.toIntArray()
+    }
+
+    fun adjustWhitelistPackages(
+        orig: Array<*>?,
+        allowPkgs: Set<String>,
+        restrictPkgs: Set<String>,
+    ): Array<String> {
+        val result = LinkedHashSet<String>()
+        orig?.forEach { item ->
+            val pkg = item as? String ?: return@forEach
+            if (pkg !in restrictPkgs || pkg in allowPkgs) {
+                result.add(pkg)
+            }
+        }
+        result.addAll(allowPkgs)
+        return result.toTypedArray()
+    }
 }
