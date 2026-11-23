@@ -4,9 +4,12 @@ import android.app.ActivityManager
 import android.app.AppOpsManager
 import android.app.Application
 import android.app.usage.UsageStatsManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.ContentProvider
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
@@ -17,6 +20,7 @@ import android.os.HandlerThread
 import android.os.PowerManager
 import android.util.Log
 import io.github.yukino1111.colorosbgmanager.BuildConfig
+import io.github.yukino1111.colorosbgmanager.model.AppUserKey
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.GlobalRuleFlags
 import io.github.yukino1111.colorosbgmanager.model.PkgRuntimeStatus
@@ -37,7 +41,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainHook : XposedModule() {
 
     @Volatile
-    private var rules: Map<String, Map<BgSubsystem, PolicyMode>> = emptyMap()
+    private var rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>> = emptyMap()
+
+    @Volatile
+    private var autoFreezePkgs: Set<AppUserKey> = emptySet()
 
     @Volatile
     private var globalFlags: GlobalRuleFlags = GlobalRuleFlags()
@@ -64,6 +71,7 @@ class MainHook : XposedModule() {
     private val hooked = AtomicBoolean(false)
     private val settingsBridgeHooked = AtomicBoolean(false)
     private val attachWatcherHooked = AtomicBoolean(false)
+    private val screenReceiverRegistered = AtomicBoolean(false)
     private val hookStatus = ConcurrentHashMap<String, Boolean>()
     private val uidPkgCache = ConcurrentHashMap<Int, List<String>>()
 
@@ -71,6 +79,7 @@ class MainHook : XposedModule() {
     private val eventBuffer = ArrayDeque<RuntimeEvent>(MAX_EVENTS)
     private val eventCooldown = ConcurrentHashMap<String, Long>()
     private val removeTaskDepth = ThreadLocal.withInitial { 0 }
+    private val pendingFreezeRunnables = ConcurrentHashMap<AppUserKey, Runnable>()
 
     private val workerHandler: Handler by lazy {
         val thread = HandlerThread("BgManagerWorker").apply { start() }
@@ -80,18 +89,26 @@ class MainHook : XposedModule() {
     private val syncDozeRunnable = Runnable { syncBatteryDozeState() }
 
     private var getHansPkgNameMethod: Method? = null
+    private var getHansUidMethod: Method? = null
     private var processRecordAppInfoMethod: Method? = null
     private var processRecordHostingMethod: Method? = null
     private var hostingGetTypeMethod: Method? = null
     private var processInfoGetPkgMethod: Method? = null
+    private var processInfoGetUidMethod: Method? = null
     private var serviceRecordPkgField: Field? = null
+    private var serviceRecordUserField: Field? = null
+    private var serviceRecordAppInfoField: Field? = null
     private var broadcastFilterPkgField: Field? = null
+    private var broadcastFilterUidField: Field? = null
+    private var broadcastRecordUserField: Field? = null
     private var osenseProcInfoAppInfoField: Field? = null
     private var osenseProcInfoAppField: Field? = null
     private var osenseProcInfoGroupField: Field? = null
     private var osenseProcInfoProcNameField: Field? = null
+    private var osenseProcInfoUidField: Field? = null
     private var osenseProcInfoSkipField: Field? = null
     private var osenseGroupPkgField: Field? = null
+    private var osenseGroupUidField: Field? = null
     private var osenseGroupSkipField: Field? = null
     private var taskGetBasePkgMethod: Method? = null
     private var taskRealActivityField: Field? = null
@@ -145,22 +162,35 @@ class MainHook : XposedModule() {
     private fun refreshRules(prefs: SharedPreferences) {
         val raw = prefs.getStringSet(RulesCodec.KEY_RULES_SET, emptySet())
         rules = RulesCodec.decodeRules(raw)
+        autoFreezePkgs = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_FREEZE_PKGS_SET, emptySet()))
         globalFlags = RulesCodec.readGlobalFlags(prefs)
-        logMsg(Log.INFO, "Rules refreshed: ${rules.size} pkgs, globals=$globalFlags")
+        logMsg(Log.INFO, "Rules refreshed: ${rules.size} targets, freeze=${autoFreezePkgs.size}, globals=$globalFlags")
         if (bootCompleted) {
             scheduleBatteryDozeSync()
         }
     }
 
-    private fun modeFor(pkg: String?, sub: BgSubsystem): PolicyMode {
+    private fun modeFor(pkg: String?, userId: Int, sub: BgSubsystem): PolicyMode {
         if (pkg.isNullOrEmpty()) return PolicyMode.FOLLOW_SYSTEM
-        return rules[pkg]?.get(sub) ?: PolicyMode.FOLLOW_SYSTEM
+        return rules[AppUserKey(pkg, userId)]?.get(sub) ?: PolicyMode.FOLLOW_SYSTEM
+    }
+
+    private fun modeForFallback(pkg: String?, sub: BgSubsystem): PolicyMode {
+        if (pkg.isNullOrEmpty()) return PolicyMode.FOLLOW_SYSTEM
+        rules[AppUserKey(pkg, 0)]?.get(sub)?.let { return it }
+        for ((key, map) in rules) {
+            if (key.packageName == pkg) {
+                map[sub]?.let { return it }
+            }
+        }
+        return PolicyMode.FOLLOW_SYSTEM
     }
 
     private fun uidHasMode(uid: Int, sub: BgSubsystem, target: PolicyMode): Boolean {
-        if (uid < 10000) return false
+        if (MultiUserPackageHelper.appIdOfUid(uid) < 10000) return false
+        val userId = MultiUserPackageHelper.userIdOfUid(uid)
         val pkgs = resolvePackagesForUid(uid)
-        return pkgs.any { modeFor(it, sub) == target }
+        return pkgs.any { modeFor(it, userId, sub) == target }
     }
 
     private fun resolveSystemContext(): Context? {
@@ -233,8 +263,8 @@ class MainHook : XposedModule() {
         if (callingUid == 1000 || callingUid == 0) return true
         val allowedUid = runCatching {
             ctx?.packageManager?.getPackageUid(BuildConfig.APPLICATION_ID, 0)
-        }.getOrNull()
-        return allowedUid != null && callingUid == allowedUid
+        }.getOrNull() ?: return false
+        return MultiUserPackageHelper.appIdOfUid(callingUid) == MultiUserPackageHelper.appIdOfUid(allowedUid)
     }
 
     private fun hookSettingsProviderClass(spClass: Class<*>) {
@@ -252,11 +282,16 @@ class MainHook : XposedModule() {
                 }
                 val method = chain.getArg(0) as? String
                 if (method == RulesCodec.BRIDGE_METHOD ||
-                    method == RulesCodec.BRIDGE_RUNTIME_METHOD
+                    method == RulesCodec.BRIDGE_RUNTIME_METHOD ||
+                    method == RulesCodec.BRIDGE_APPS_METHOD ||
+                    method == RulesCodec.BRIDGE_PROCESSES_METHOD ||
+                    method == RulesCodec.BRIDGE_SET_SUSPEND_METHOD ||
+                    method == RulesCodec.BRIDGE_LAUNCH_APP_METHOD
                 ) {
                     val ctx = resolveSystemContext() ?: (chain.thisObject as? ContentProvider)?.context
                     if (isBridgeCallerAllowed(ctx)) {
                         val arg = chain.getArg(1) as? String
+                        val extras = chain.getArg(2) as? Bundle
                         val token = Binder.clearCallingIdentity()
                         return@intercept try {
                             when (method) {
@@ -265,7 +300,19 @@ class MainHook : XposedModule() {
                                     systemClassLoader = systemServerClassLoader,
                                     systemContext = ctx,
                                 )
-                                RulesCodec.BRIDGE_RUNTIME_METHOD -> handleRuntimeQuery(ctx, arg)
+                                RulesCodec.BRIDGE_RUNTIME_METHOD -> handleRuntimeQuery(ctx, arg, extras)
+                                RulesCodec.BRIDGE_APPS_METHOD -> if (ctx != null) {
+                                    MultiUserPackageHelper.buildAppsBundle(ctx)
+                                } else {
+                                    Bundle().apply { putBoolean("ok", false) }
+                                }
+                                RulesCodec.BRIDGE_PROCESSES_METHOD -> if (ctx != null) {
+                                    SystemTelemetryHelper.buildProcessesBundle(ctx, amsInstance)
+                                } else {
+                                    Bundle().apply { putBoolean("ok", false) }
+                                }
+                                RulesCodec.BRIDGE_SET_SUSPEND_METHOD -> handleSetSuspend(extras)
+                                RulesCodec.BRIDGE_LAUNCH_APP_METHOD -> handleLaunchApp(ctx, extras)
                                 else -> null
                             }
                         } finally {
@@ -299,8 +346,10 @@ class MainHook : XposedModule() {
                 impClass.getDeclaredMethod("isImportantPkg", hansPkgClass, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, String::class.java),
             ).forEach { m ->
                 hook(m).intercept { chain ->
-                    val pkg = extractHansPkgName(chain.getArg(0))
-                    if (modeFor(pkg, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW) {
+                    val hansPkg = chain.getArg(0)
+                    val pkg = extractHansPkgName(hansPkg)
+                    val userId = extractHansUserId(hansPkg)
+                    if (modeFor(pkg, userId, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW) {
                         return@intercept true
                     }
                     chain.proceed()
@@ -313,8 +362,10 @@ class MainHook : XposedModule() {
             val cgroupClass = cl.loadClass("com.android.server.hans.freeze.HansCGroup")
             val freezeMethod = cgroupClass.getDeclaredMethod("hansFreezeLocked", hansPkgClass, String::class.java)
             hook(freezeMethod).intercept { chain ->
-                val pkg = extractHansPkgName(chain.getArg(0))
-                if (modeFor(pkg, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW) {
+                val hansPkg = chain.getArg(0)
+                val pkg = extractHansPkgName(hansPkg)
+                val userId = extractHansUserId(hansPkg)
+                if (modeFor(pkg, userId, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW) {
                     return@intercept false
                 }
                 chain.proceed()
@@ -336,9 +387,11 @@ class MainHook : XposedModule() {
                 Boolean::class.javaPrimitiveType,
             )
             hook(strictMethod).intercept { chain ->
+                val uid = chain.getArg(0) as Int
                 val pkg = chain.getArg(4) as? String
+                val userId = MultiUserPackageHelper.userIdOfUid(uid)
                 if (globalFlags.disableStrictModeFreeze ||
-                    modeFor(pkg, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW
+                    modeFor(pkg, userId, BgSubsystem.HANS_FREEZE) == PolicyMode.FORCE_ALLOW
                 ) {
                     return@intercept false
                 }
@@ -360,7 +413,7 @@ class MainHook : XposedModule() {
             }
             hook(dbClass.getDeclaredMethod("isProtectApp", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.HANS_FREEZE)) {
+                when (modeForFallback(pkg, BgSubsystem.HANS_FREEZE)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -369,7 +422,7 @@ class MainHook : XposedModule() {
             }
             hook(dbClass.getDeclaredMethod("isBlackHansApp", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.HANS_FREEZE)) {
+                when (modeForFallback(pkg, BgSubsystem.HANS_FREEZE)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> true
@@ -383,7 +436,7 @@ class MainHook : XposedModule() {
                 runCatching {
                     hook(dbClass.getDeclaredMethod(methodName, String::class.java, String::class.java)).intercept { chain ->
                         val pkg = chain.getArg(0) as? String
-                        when (modeFor(pkg, BgSubsystem.HANS_FREEZE)) {
+                        when (modeForFallback(pkg, BgSubsystem.HANS_FREEZE)) {
                             PolicyMode.FORCE_ALLOW -> true
                             PolicyMode.FORCE_RESTRICT,
                             PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -408,7 +461,8 @@ class MainHook : XposedModule() {
             ).forEach { m ->
                 hook(m).intercept { chain ->
                     val pkg = chain.getArg(0) as? String
-                    when (modeFor(pkg, BgSubsystem.AUTO_START)) {
+                    val userId = chain.getArg(1) as Int
+                    when (modeFor(pkg, userId, BgSubsystem.AUTO_START)) {
                         PolicyMode.FORCE_ALLOW -> true
                         PolicyMode.FORCE_RESTRICT,
                         PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -428,14 +482,15 @@ class MainHook : XposedModule() {
                 if (amsInstance == null) amsInstance = chain.getArg(0)
                 val pr = chain.getArg(1)
                 val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
                 val hostingType = extractHostingType(pr)
                 val isActivity = hostingType?.contains("activity", ignoreCase = true) == true
                 if (!isActivity) {
-                    val autoMode = modeFor(pkg, BgSubsystem.AUTO_START)
-                    val assocMode = modeFor(pkg, BgSubsystem.ASSOCIATE_START)
+                    val autoMode = modeFor(pkg, userId, BgSubsystem.AUTO_START)
+                    val assocMode = modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
                     if (autoMode.isRestrict || assocMode.isRestrict) {
                         val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
-                        recordEvent(pkg, sub, "prevent_start_proc", hostingType ?: "bg")
+                        recordEvent(pkg, sub, "prevent_start_proc", hostingType ?: "bg", userId)
                         return@intercept true
                     }
                     if (autoMode == PolicyMode.FORCE_ALLOW) {
@@ -447,7 +502,8 @@ class MainHook : XposedModule() {
 
             hook(mgrClass.getDeclaredMethod("shouldRestrictApp", String::class.java, Int::class.javaPrimitiveType)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.AUTO_START)) {
+                val userId = chain.getArg(1) as Int
+                when (modeFor(pkg, userId, BgSubsystem.AUTO_START)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> true
@@ -461,12 +517,14 @@ class MainHook : XposedModule() {
             val activeServicesClass = cl.loadClass("com.android.server.am.ActiveServices")
             val srClass = cl.loadClass("com.android.server.am.ServiceRecord")
             hook(activeServicesClass.getDeclaredMethod("scheduleServiceRestartLocked", srClass, Boolean::class.javaPrimitiveType)).intercept { chain ->
-                val pkg = extractServiceRecordPkg(chain.getArg(0))
-                val autoMode = modeFor(pkg, BgSubsystem.AUTO_START)
-                val assocMode = modeFor(pkg, BgSubsystem.ASSOCIATE_START)
+                val sr = chain.getArg(0)
+                val pkg = extractServiceRecordPkg(sr)
+                val userId = extractServiceRecordUserId(sr)
+                val autoMode = modeFor(pkg, userId, BgSubsystem.AUTO_START)
+                val assocMode = modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
                 if (autoMode.isRestrict || assocMode.isRestrict) {
                     val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
-                    recordEvent(pkg, sub, "block_service_restart", "START_STICKY")
+                    recordEvent(pkg, sub, "block_service_restart", "START_STICKY", userId)
                     return@intercept false
                 }
                 chain.proceed()
@@ -487,7 +545,8 @@ class MainHook : XposedModule() {
             ).forEach { m ->
                 hook(m).intercept { chain ->
                     val pkg = chain.getArg(0) as? String
-                    when (modeFor(pkg, BgSubsystem.ASSOCIATE_START)) {
+                    val userId = chain.getArg(1) as Int
+                    when (modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)) {
                         PolicyMode.FORCE_ALLOW -> true
                         PolicyMode.FORCE_RESTRICT,
                         PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -502,7 +561,8 @@ class MainHook : XposedModule() {
             val mgrClass = cl.loadClass("com.android.server.am.OplusAppStartupManager")
             hook(mgrClass.getDeclaredMethod("inAssociateStartWhiteList", String::class.java, Int::class.javaPrimitiveType)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.ASSOCIATE_START)) {
+                val userId = chain.getArg(1) as Int
+                when (modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -522,12 +582,14 @@ class MainHook : XposedModule() {
                 .filter { it.name == "shouldPreventStartService" }
                 .forEach { method ->
                     hook(method).intercept { chain ->
-                        val targetPkg = extractServiceRecordPkg(chain.getArg(0))
-                        when (modeFor(targetPkg, BgSubsystem.ASSOCIATE_START)) {
+                        val sr = chain.getArg(0)
+                        val targetPkg = extractServiceRecordPkg(sr)
+                        val userId = extractServiceRecordUserId(sr)
+                        when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
                             PolicyMode.FORCE_ALLOW -> false
                             PolicyMode.FORCE_RESTRICT,
                             PolicyMode.FORCE_RESTRICT_HBG -> {
-                                recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_service", "startService")
+                                recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_service", "startService", userId)
                                 true
                             }
                             PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
@@ -545,12 +607,14 @@ class MainHook : XposedModule() {
                     Int::class.javaPrimitiveType,
                 )
             ).intercept { chain ->
-                val targetPkg = extractServiceRecordPkg(chain.getArg(2))
-                when (modeFor(targetPkg, BgSubsystem.ASSOCIATE_START)) {
+                val sr = chain.getArg(2)
+                val targetPkg = extractServiceRecordPkg(sr)
+                val userId = extractServiceRecordUserId(sr)
+                when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> {
-                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_bind", chain.getArg(0) as? String ?: "")
+                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_bind", chain.getArg(0) as? String ?: "", userId)
                         true
                     }
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
@@ -567,15 +631,19 @@ class MainHook : XposedModule() {
                     String::class.java,
                 )
             ).intercept { chain ->
-                val resolvePkg = (chain.getArg(2) as? ResolveInfo)?.activityInfo?.packageName
-                val filterPkg = extractBroadcastFilterPkg(chain.getArg(3))
+                val br = chain.getArg(1)
+                val ri = chain.getArg(2) as? ResolveInfo
+                val bf = chain.getArg(3)
+                val resolvePkg = ri?.activityInfo?.packageName
+                val filterPkg = extractBroadcastFilterPkg(bf)
                 val argPkg = chain.getArg(4) as? String
                 val targetPkg = resolvePkg ?: filterPkg ?: argPkg
-                when (modeFor(targetPkg, BgSubsystem.ASSOCIATE_START)) {
+                val userId = extractReceiverUserId(ri, bf, br)
+                when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> {
-                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_receiver", "broadcast")
+                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_receiver", "broadcast", userId)
                         true
                     }
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
@@ -592,13 +660,14 @@ class MainHook : XposedModule() {
                     Int::class.javaPrimitiveType,
                 )
             ).intercept { chain ->
-                val appInfoPkg = (chain.getArg(2) as? ApplicationInfo)?.packageName
-                val targetPkg = appInfoPkg ?: (chain.getArg(3) as? String)
-                when (modeFor(targetPkg, BgSubsystem.ASSOCIATE_START)) {
+                val appInfo = chain.getArg(2) as? ApplicationInfo
+                val targetPkg = appInfo?.packageName ?: (chain.getArg(3) as? String)
+                val userId = appInfo?.let { MultiUserPackageHelper.userIdOfUid(it.uid) } ?: (chain.getArg(4) as Int)
+                when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> {
-                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_provider", chain.getArg(3) as? String ?: "")
+                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_provider", chain.getArg(3) as? String ?: "", userId)
                         true
                     }
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
@@ -620,9 +689,11 @@ class MainHook : XposedModule() {
                 policyClass.getDeclaredMethod("tryRemindApp", Int::class.javaPrimitiveType, String::class.java, String::class.java),
             ).forEach { m ->
                 hook(m).intercept { chain ->
+                    val uid = chain.getArg(0) as Int
+                    val userId = MultiUserPackageHelper.userIdOfUid(uid)
                     val pkg = chain.getArg(1) as? String
-                    if (modeFor(pkg, BgSubsystem.BATTERY_DOZE) == PolicyMode.FORCE_ALLOW) {
-                        recordEvent(pkg, BgSubsystem.BATTERY_DOZE, "skip_oguard", m.name)
+                    if (modeFor(pkg, userId, BgSubsystem.BATTERY_DOZE) == PolicyMode.FORCE_ALLOW) {
+                        recordEvent(pkg, BgSubsystem.BATTERY_DOZE, "skip_oguard", m.name, userId)
                         return@intercept false
                     }
                     chain.proceed()
@@ -640,7 +711,7 @@ class MainHook : XposedModule() {
                 )
             ).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                if (modeFor(pkg, BgSubsystem.BATTERY_DOZE) == PolicyMode.FORCE_ALLOW) {
+                if (modeForFallback(pkg, BgSubsystem.BATTERY_DOZE) == PolicyMode.FORCE_ALLOW) {
                     recordEvent(pkg, BgSubsystem.BATTERY_DOZE, "skip_oguard", "requestKillApp")
                     return@intercept false
                 }
@@ -653,7 +724,7 @@ class MainHook : XposedModule() {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
             hook(dbClass.getDeclaredMethod("isActiveUpdateDozeWhiteList", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.BATTERY_DOZE)) {
+                when (modeForFallback(pkg, BgSubsystem.BATTERY_DOZE)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -672,6 +743,7 @@ class MainHook : XposedModule() {
                 if (phase >= 1000) {
                     bootCompleted = true
                     scheduleBatteryDozeSync()
+                    registerScreenOffReceiver()
                 }
                 result
             }
@@ -682,7 +754,7 @@ class MainHook : XposedModule() {
                 hook(m).intercept { chain ->
                     if (deviceIdleController == null) deviceIdleController = chain.thisObject
                     val pkg = chain.getArg(0) as? String
-                    when (modeFor(pkg, BgSubsystem.BATTERY_DOZE)) {
+                    when (modeForFallback(pkg, BgSubsystem.BATTERY_DOZE)) {
                         PolicyMode.FORCE_ALLOW -> true
                         PolicyMode.FORCE_RESTRICT,
                         PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -710,7 +782,8 @@ class MainHook : XposedModule() {
             ).intercept { chain ->
                 if (appStandbyController == null) appStandbyController = chain.thisObject
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.BATTERY_DOZE)) {
+                val userId = chain.getArg(1) as Int
+                when (modeFor(pkg, userId, BgSubsystem.BATTERY_DOZE)) {
                     PolicyMode.FORCE_ALLOW -> STANDBY_BUCKET_EXEMPTED
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> {
@@ -738,7 +811,9 @@ class MainHook : XposedModule() {
             ).forEach { m ->
                 hook(m).intercept { chain ->
                     val pkg = chain.getArg(0) as? String
-                    when (modeFor(pkg, BgSubsystem.BATTERY_DOZE)) {
+                    val rawId = chain.getArg(1) as Int
+                    val userId = if (rawId >= 10000) MultiUserPackageHelper.userIdOfUid(rawId) else rawId
+                    when (modeFor(pkg, userId, BgSubsystem.BATTERY_DOZE)) {
                         PolicyMode.FORCE_ALLOW -> false
                         PolicyMode.FORCE_RESTRICT,
                         PolicyMode.FORCE_RESTRICT_HBG -> true
@@ -767,10 +842,12 @@ class MainHook : XposedModule() {
             val prClass = cl.loadClass("com.android.server.am.ProcessRecord")
 
             hook(athenaClass.getDeclaredMethod("skipCacheEmptyKill", prClass)).intercept { chain ->
-                val pkg = extractProcessRecordPkg(chain.getArg(0))
-                when (modeFor(pkg, BgSubsystem.ATHENA_RECENT)) {
+                val pr = chain.getArg(0)
+                val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
+                when (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT)) {
                     PolicyMode.FORCE_ALLOW -> {
-                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "skipCacheEmptyKill")
+                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "skipCacheEmptyKill", userId)
                         true
                     }
                     PolicyMode.FORCE_RESTRICT,
@@ -780,9 +857,11 @@ class MainHook : XposedModule() {
             }
 
             hook(athenaClass.getDeclaredMethod("doProactiveClean", prClass, Int::class.javaPrimitiveType)).intercept { chain ->
-                val pkg = extractProcessRecordPkg(chain.getArg(0))
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "doProactiveClean")
+                val pr = chain.getArg(0)
+                val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "doProactiveClean", userId)
                     return@intercept null
                 }
                 chain.proceed()
@@ -800,8 +879,9 @@ class MainHook : XposedModule() {
                 )
             ).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_forcestop", chain.getArg(4) as? String ?: "")
+                val userId = chain.getArg(1) as Int
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_forcestop", chain.getArg(4) as? String ?: "", userId)
                     return@intercept null
                 }
                 chain.proceed()
@@ -829,9 +909,10 @@ class MainHook : XposedModule() {
             ).intercept { chain ->
                 val procInfo = chain.getArg(1)
                 val pkg = extractOsenseProcInfoPkg(procInfo)
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                val userId = extractOsenseProcInfoUserId(procInfo)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
                     setOsenseSkipReason(procInfo, SKIP_REASON_ALLOW)
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "cch-empty")
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "cch-empty", userId)
                     return@intercept SKIP_REASON_ALLOW
                 }
                 chain.proceed()
@@ -840,9 +921,10 @@ class MainHook : XposedModule() {
             hook(osenseKillClass.getDeclaredMethod("getNonUiCheckSkipReason", piClass)).intercept { chain ->
                 val procInfo = chain.getArg(0)
                 val pkg = extractOsenseProcInfoPkg(procInfo)
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                val userId = extractOsenseProcInfoUserId(procInfo)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
                     setOsenseSkipReason(procInfo, SKIP_REASON_ALLOW)
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "non-ui")
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "non-ui", userId)
                     return@intercept SKIP_REASON_ALLOW
                 }
                 chain.proceed()
@@ -859,9 +941,10 @@ class MainHook : XposedModule() {
             ).intercept { chain ->
                 val group = chain.getArg(1)
                 val pkg = extractOsenseGroupPkg(group)
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                val userId = extractOsenseGroupUserId(group)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
                     setOsenseGroupSkipReason(group, SKIP_REASON_ALLOW)
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "group-clean")
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "group-clean", userId)
                     return@intercept SKIP_REASON_ALLOW
                 }
                 chain.proceed()
@@ -876,9 +959,10 @@ class MainHook : XposedModule() {
             ).intercept { chain ->
                 val group = chain.getArg(1)
                 val pkg = extractOsenseGroupPkg(group)
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                val userId = extractOsenseGroupUserId(group)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
                     setOsenseGroupSkipReason(group, SKIP_REASON_ALLOW)
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "recent-bg")
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "recent-bg", userId)
                     return@intercept SKIP_REASON_ALLOW
                 }
                 chain.proceed()
@@ -895,10 +979,12 @@ class MainHook : XposedModule() {
                     Boolean::class.javaPrimitiveType,
                 )
             ).intercept { chain ->
-                val pkg = extractProcessRecordPkg(chain.getArg(0))
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                val pr = chain.getArg(0)
+                val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
                     val reason = (chain.getArg(2) as? String) ?: (chain.getArg(1) as? String) ?: "osense"
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_okill", reason)
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_okill", reason, userId)
                     return@intercept null
                 }
                 chain.proceed()
@@ -916,9 +1002,10 @@ class MainHook : XposedModule() {
                     String::class.java,
                 )
             ).intercept { chain ->
+                val userId = chain.getArg(1) as Int
                 val pkg = chain.getArg(2) as? String
-                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_remove_task", "hans")
+                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_remove_task", "hans", userId)
                     return@intercept null
                 }
                 chain.proceed()
@@ -933,7 +1020,7 @@ class MainHook : XposedModule() {
                 val filtered = ArrayList<String>(raw.size)
                 for (item in raw) {
                     val pkg = item as? String ?: continue
-                    if (!modeFor(pkg, BgSubsystem.ATHENA_RECENT).isRestrict) {
+                    if (!modeFor(pkg, 0, BgSubsystem.ATHENA_RECENT).isRestrict) {
                         filtered.add(pkg)
                     }
                 }
@@ -976,10 +1063,15 @@ class MainHook : XposedModule() {
                             val reason = chain.getArg(3) as? String ?: "removeTask"
                             if (killProcess && removeFromRecents) {
                                 val pkg = extractTaskPkg(task)
-                                if (modeFor(pkg, BgSubsystem.ATHENA_RECENT).isRestrict && pkg != null) {
-                                    val userId = extractTaskUserId(task)
-                                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "remove_task_forcestop", reason)
-                                    workerHandler.post { forceStopPackageDirect(pkg, userId) }
+                                val userId = extractTaskUserId(task)
+                                if (pkg != null) {
+                                    if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT).isRestrict) {
+                                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "remove_task_forcestop", reason, userId)
+                                        workerHandler.post { forceStopPackageDirect(pkg, userId) }
+                                    }
+                                    if (AppUserKey(pkg, userId) in autoFreezePkgs) {
+                                        scheduleAutoFreezeCheck(pkg, userId, 1500L)
+                                    }
                                 }
                             }
                         }
@@ -996,7 +1088,7 @@ class MainHook : XposedModule() {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
             hook(dbClass.getDeclaredMethod("isTrimMemWhitePkg", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.ATHENA_RECENT)) {
+                when (modeForFallback(pkg, BgSubsystem.ATHENA_RECENT)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1017,8 +1109,10 @@ class MainHook : XposedModule() {
             val piClass = cl.loadClass("com.android.server.cpulimit.ProcessInfo")
 
             hook(cpuClass.getDeclaredMethod("skipSetSchedGroup", prClass, String::class.java)).intercept { chain ->
-                val pkg = extractProcessRecordPkg(chain.getArg(0))
-                when (modeFor(pkg, BgSubsystem.CPU_LIMIT)) {
+                val pr = chain.getArg(0)
+                val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
+                when (modeFor(pkg, userId, BgSubsystem.CPU_LIMIT)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1034,8 +1128,10 @@ class MainHook : XposedModule() {
                     Int::class.javaPrimitiveType,
                 )
             ).intercept { chain ->
-                val pkg = extractProcessRecordPkg(chain.getArg(0))
-                if (modeFor(pkg, BgSubsystem.CPU_LIMIT) == PolicyMode.FORCE_ALLOW) {
+                val pr = chain.getArg(0)
+                val pkg = extractProcessRecordPkg(pr)
+                val userId = extractProcessRecordUserId(pr)
+                if (modeFor(pkg, userId, BgSubsystem.CPU_LIMIT) == PolicyMode.FORCE_ALLOW) {
                     return@intercept false
                 }
                 chain.proceed()
@@ -1051,8 +1147,10 @@ class MainHook : XposedModule() {
                     Boolean::class.javaPrimitiveType,
                 )
             ).intercept { chain ->
-                val pkg = extractProcessInfoPkg(chain.getArg(0))
-                if (modeFor(pkg, BgSubsystem.CPU_LIMIT) == PolicyMode.FORCE_ALLOW) {
+                val pi = chain.getArg(0)
+                val pkg = extractProcessInfoPkg(pi)
+                val userId = extractProcessInfoUserId(pi)
+                if (modeFor(pkg, userId, BgSubsystem.CPU_LIMIT) == PolicyMode.FORCE_ALLOW) {
                     return@intercept null
                 }
                 chain.proceed()
@@ -1064,7 +1162,7 @@ class MainHook : XposedModule() {
             val cpuDbClass = cl.loadClass("com.android.server.cpulimit.CpuLimitDBConfig")
             hook(cpuDbClass.getDeclaredMethod("inCpuSetBlackList", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.CPU_LIMIT)) {
+                when (modeForFallback(pkg, BgSubsystem.CPU_LIMIT)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> true
@@ -1073,7 +1171,7 @@ class MainHook : XposedModule() {
             }
             hook(cpuDbClass.getDeclaredMethod("inVipHBGList", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.CPU_LIMIT)) {
+                when (modeForFallback(pkg, BgSubsystem.CPU_LIMIT)) {
                     PolicyMode.FORCE_ALLOW,
                     PolicyMode.FORCE_RESTRICT_HBG -> true
                     PolicyMode.FORCE_RESTRICT -> false
@@ -1083,7 +1181,7 @@ class MainHook : XposedModule() {
             runCatching {
                 hook(cpuDbClass.getDeclaredMethod("inParticularPkgList", String::class.java)).intercept { chain ->
                     val pkg = chain.getArg(0) as? String
-                    when (modeFor(pkg, BgSubsystem.CPU_LIMIT)) {
+                    when (modeForFallback(pkg, BgSubsystem.CPU_LIMIT)) {
                         PolicyMode.FORCE_ALLOW -> true
                         PolicyMode.FORCE_RESTRICT,
                         PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1098,7 +1196,7 @@ class MainHook : XposedModule() {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
             hook(dbClass.getDeclaredMethod("isInCpuCtlWhiteList", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.CPU_LIMIT)) {
+                when (modeForFallback(pkg, BgSubsystem.CPU_LIMIT)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1116,8 +1214,10 @@ class MainHook : XposedModule() {
         runCatching {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
             hook(dbClass.getDeclaredMethod("isRestrictedNetAppInDoze", Int::class.javaPrimitiveType, String::class.java)).intercept { chain ->
+                val uid = chain.getArg(0) as Int
                 val pkg = chain.getArg(1) as? String
-                when (modeFor(pkg, BgSubsystem.DOZE_NET)) {
+                val userId = MultiUserPackageHelper.userIdOfUid(uid)
+                when (modeFor(pkg, userId, BgSubsystem.DOZE_NET)) {
                     PolicyMode.FORCE_ALLOW -> false
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> true
@@ -1126,7 +1226,7 @@ class MainHook : XposedModule() {
             }
             hook(dbClass.getDeclaredMethod("isTrafficWhitePkg", String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.DOZE_NET)) {
+                when (modeForFallback(pkg, BgSubsystem.DOZE_NET)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1158,7 +1258,7 @@ class MainHook : XposedModule() {
             val startupCfgClass = cl.loadClass("com.android.server.am.OplusAppStartupConfig")
             hook(startupCfgClass.getDeclaredMethod("isInBroadcastRestrictionWhiteList", String::class.java, String::class.java)).intercept { chain ->
                 val pkg = chain.getArg(0) as? String
-                when (modeFor(pkg, BgSubsystem.BROADCAST_RESTRICT)) {
+                when (modeForFallback(pkg, BgSubsystem.BROADCAST_RESTRICT)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1179,10 +1279,11 @@ class MainHook : XposedModule() {
                     android.content.Intent::class.java,
                 )
             ).intercept { chain ->
-                val appPkg = (chain.getArg(0) as? ApplicationInfo)?.packageName
-                val prPkg = extractProcessRecordPkg(chain.getArg(1))
-                val pkg = appPkg ?: prPkg
-                when (modeFor(pkg, BgSubsystem.BROADCAST_RESTRICT)) {
+                val appInfo = chain.getArg(0) as? ApplicationInfo
+                val pr = chain.getArg(1)
+                val pkg = appInfo?.packageName ?: extractProcessRecordPkg(pr)
+                val userId = appInfo?.let { MultiUserPackageHelper.userIdOfUid(it.uid) } ?: extractProcessRecordUserId(pr)
+                when (modeFor(pkg, userId, BgSubsystem.BROADCAST_RESTRICT)) {
                     PolicyMode.FORCE_ALLOW -> true
                     PolicyMode.FORCE_RESTRICT,
                     PolicyMode.FORCE_RESTRICT_HBG -> false
@@ -1207,10 +1308,11 @@ class MainHook : XposedModule() {
                 )
             ).intercept { chain ->
                 if (globalFlags.disableBroadcastQuotaGlobal) return@intercept false
-                val appPkg = (chain.getArg(2) as? ApplicationInfo)?.packageName
-                val prPkg = extractProcessRecordPkg(chain.getArg(3))
-                val pkg = appPkg ?: prPkg
-                if (modeFor(pkg, BgSubsystem.BROADCAST_RESTRICT) == PolicyMode.FORCE_ALLOW) {
+                val appInfo = chain.getArg(2) as? ApplicationInfo
+                val pr = chain.getArg(3)
+                val pkg = appInfo?.packageName ?: extractProcessRecordPkg(pr)
+                val userId = appInfo?.let { MultiUserPackageHelper.userIdOfUid(it.uid) } ?: extractProcessRecordUserId(pr)
+                if (modeFor(pkg, userId, BgSubsystem.BROADCAST_RESTRICT) == PolicyMode.FORCE_ALLOW) {
                     return@intercept false
                 }
                 chain.proceed()
@@ -1229,6 +1331,7 @@ class MainHook : XposedModule() {
                 val result = chain.proceed()
                 bootCompleted = true
                 scheduleBatteryDozeSync()
+                registerScreenOffReceiver()
                 result
             }
             amsClass.declaredMethods
@@ -1240,6 +1343,120 @@ class MainHook : XposedModule() {
                     }
                 }
         }.onFailure { log(Log.ERROR, TAG, "Hook ActivityManagerService lifecycle failed", it) }
+
+        runCatching {
+            val procListClass = cl.loadClass("com.android.server.am.ProcessList")
+            val prClass = cl.loadClass("com.android.server.am.ProcessRecord")
+            procListClass.declaredMethods
+                .filter { it.name == "removeProcessLocked" && it.parameterTypes.isNotEmpty() && it.parameterTypes[0] == prClass }
+                .forEach { m ->
+                    hook(m).intercept { chain ->
+                        val pr = chain.getArg(0)
+                        val pkg = extractProcessRecordPkg(pr)
+                        val userId = extractProcessRecordUserId(pr)
+                        val res = chain.proceed()
+                        if (pkg != null && AppUserKey(pkg, userId) in autoFreezePkgs) {
+                            scheduleAutoFreezeCheck(pkg, userId, globalFlags.autoFreezeDelaySec * 1000L)
+                        }
+                        res
+                    }
+                }
+        }.onFailure { logMsg(Log.WARN, "Hook ProcessList.removeProcessLocked skipped", it) }
+    }
+
+    private fun registerScreenOffReceiver() {
+        val ctx = resolveSystemContext() ?: return
+        if (!screenReceiverRegistered.compareAndSet(false, true)) return
+        runCatching {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                        val delayMs = globalFlags.autoFreezeDelaySec * 1000L
+                        for (target in autoFreezePkgs) {
+                            scheduleAutoFreezeCheck(target.packageName, target.userId, delayMs)
+                        }
+                    }
+                }
+            }
+            ctx.registerReceiver(receiver, IntentFilter(Intent.ACTION_SCREEN_OFF), null, workerHandler)
+        }.onFailure {
+            screenReceiverRegistered.set(false)
+            log(Log.ERROR, TAG, "Failed to register SCREEN_OFF receiver", it)
+        }
+    }
+
+    private fun scheduleAutoFreezeCheck(pkg: String, userId: Int, delayMs: Long) {
+        if (isProtectedFromFreeze(pkg)) return
+        val key = AppUserKey(pkg, userId)
+        pendingFreezeRunnables.remove(key)?.let { workerHandler.removeCallbacks(it) }
+        val r = Runnable {
+            pendingFreezeRunnables.remove(key)
+            if (key !in autoFreezePkgs) return@Runnable
+            val ctx = resolveSystemContext() ?: return@Runnable
+            if (MultiUserPackageHelper.isPackageSuspended(ctx, pkg, userId)) return@Runnable
+            val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return@Runnable
+            val activeFgOrSvc = runCatching {
+                am.runningAppProcesses.orEmpty().any { proc ->
+                    MultiUserPackageHelper.userIdOfUid(proc.uid) == userId &&
+                        (proc.pkgList?.contains(pkg) == true || proc.processName.substringBefore(':') == pkg) &&
+                        proc.importance < ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+                }
+            }.getOrDefault(false)
+            if (!activeFgOrSvc) {
+                if (MultiUserPackageHelper.setPackageSuspended(pkg, userId, true)) {
+                    recordEvent(pkg, BgSubsystem.HANS_FREEZE, "auto_suspend", "no-bg", userId)
+                }
+            }
+        }
+        pendingFreezeRunnables[key] = r
+        workerHandler.postDelayed(r, delayMs.coerceAtLeast(1000L))
+    }
+
+    private fun isProtectedFromFreeze(pkg: String): Boolean =
+        pkg == BuildConfig.APPLICATION_ID ||
+            pkg == "android" ||
+            pkg == "com.android.systemui" ||
+            pkg == "com.android.launcher" ||
+            pkg == "com.android.settings" ||
+            pkg == "com.android.phone"
+
+    private fun handleSetSuspend(extras: Bundle?): Bundle {
+        val pkg = extras?.getString("pkg")?.trim().orEmpty()
+        val userId = extras?.getInt("user_id", 0) ?: 0
+        val suspend = extras?.getBoolean("suspend", true) ?: true
+        if (pkg.isEmpty() || (suspend && isProtectedFromFreeze(pkg))) {
+            return Bundle().apply { putBoolean("ok", false) }
+        }
+        val key = AppUserKey(pkg, userId)
+        if (!suspend) {
+            pendingFreezeRunnables.remove(key)?.let { workerHandler.removeCallbacks(it) }
+        }
+        val ok = MultiUserPackageHelper.setPackageSuspended(pkg, userId, suspend)
+        if (ok) {
+            recordEvent(
+                pkg,
+                BgSubsystem.HANS_FREEZE,
+                if (suspend) "manual_suspend" else "manual_unsuspend",
+                if (suspend) "pm-suspend" else "pm-unsuspend",
+                userId,
+            )
+        }
+        return Bundle().apply { putBoolean("ok", ok) }
+    }
+
+    private fun handleLaunchApp(ctx: Context?, extras: Bundle?): Bundle {
+        val pkg = extras?.getString("pkg")?.trim().orEmpty()
+        val userId = extras?.getInt("user_id", 0) ?: 0
+        if (pkg.isEmpty() || ctx == null) {
+            return Bundle().apply { putBoolean("ok", false) }
+        }
+        val key = AppUserKey(pkg, userId)
+        pendingFreezeRunnables.remove(key)?.let { workerHandler.removeCallbacks(it) }
+        val ok = MultiUserPackageHelper.launchPackageAsUser(ctx, pkg, userId)
+        if (ok) {
+            recordEvent(pkg, BgSubsystem.HANS_FREEZE, "unsuspend_launch", "launcher", userId)
+        }
+        return Bundle().apply { putBoolean("ok", ok) }
     }
 
     private fun scheduleBatteryDozeSync() {
@@ -1250,15 +1467,17 @@ class MainHook : XposedModule() {
     private fun syncBatteryDozeState(): Int {
         val dic = deviceIdleController ?: return 0
         val currentRules = rules
-        val allowPkgs = ArrayList<String>()
-        val restrictPkgs = ArrayList<String>()
-        for ((pkg, map) in currentRules) {
+        val allowSet = LinkedHashSet<String>()
+        val restrictCandidate = LinkedHashSet<String>()
+        for ((target, map) in currentRules) {
             when (map[BgSubsystem.BATTERY_DOZE]) {
-                PolicyMode.FORCE_ALLOW -> allowPkgs.add(pkg)
-                PolicyMode.FORCE_RESTRICT, PolicyMode.FORCE_RESTRICT_HBG -> restrictPkgs.add(pkg)
+                PolicyMode.FORCE_ALLOW -> allowSet.add(target.packageName)
+                PolicyMode.FORCE_RESTRICT, PolicyMode.FORCE_RESTRICT_HBG -> restrictCandidate.add(target.packageName)
                 else -> {}
             }
         }
+        val allowPkgs = allowSet.toList()
+        val restrictPkgs = restrictCandidate.filter { it !in allowSet }
         val token = Binder.clearCallingIdentity()
         var changed = 0
         try {
@@ -1313,26 +1532,28 @@ class MainHook : XposedModule() {
                 }.getOrDefault(false)
                 if (ok) return true
             }
-            val am = resolveSystemContext()?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            if (am != null) {
-                runCatching {
-                    val m = am.javaClass.getMethod("forceStopPackage", String::class.java)
-                    m.invoke(am, pkg)
-                    true
-                }.getOrDefault(false)
-            } else {
-                false
+            if (userId == 0) {
+                val am = resolveSystemContext()?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                if (am != null) {
+                    return runCatching {
+                        val m = am.javaClass.getMethod("forceStopPackage", String::class.java)
+                        m.invoke(am, pkg)
+                        true
+                    }.getOrDefault(false)
+                }
             }
+            false
         } finally {
             Binder.restoreCallingIdentity(token)
         }
     }
 
-    private fun handleRuntimeQuery(ctx: Context?, pkgName: String?): Bundle {
+    private fun handleRuntimeQuery(ctx: Context?, pkgName: String?, extras: Bundle?): Bundle {
         val targetPkg = pkgName?.trim().takeIf { !it.isNullOrEmpty() }
+        val targetUserId = extras?.getInt("user_id", 0) ?: 0
         val events = synchronized(eventLock) {
             val seq = if (targetPkg != null) {
-                eventBuffer.asSequence().filter { it.pkgName == targetPkg }
+                eventBuffer.asSequence().filter { it.pkgName == targetPkg && it.userId == targetUserId }
             } else {
                 eventBuffer.asSequence()
             }
@@ -1341,7 +1562,7 @@ class MainHook : XposedModule() {
 
         val out = Bundle()
         if (targetPkg != null && ctx != null) {
-            val status = buildPkgRuntimeStatus(ctx, targetPkg)
+            val status = buildPkgRuntimeStatus(ctx, targetPkg, targetUserId)
             out.putAll(status.toBundle())
         } else {
             out.putBoolean("ok", true)
@@ -1350,12 +1571,31 @@ class MainHook : XposedModule() {
         return out
     }
 
-    private fun buildPkgRuntimeStatus(ctx: Context, pkg: String): PkgRuntimeStatus {
-        val uid = runCatching { ctx.packageManager.getPackageUid(pkg, 0) }.getOrNull() ?: -1
+    private fun buildPkgRuntimeStatus(ctx: Context, pkg: String, userId: Int): PkgRuntimeStatus {
+        val uid = runCatching {
+            val m = ctx.packageManager.javaClass.getMethod("getPackageUidAsUser", String::class.java, Int::class.javaPrimitiveType)
+            m.invoke(ctx.packageManager, pkg, userId) as? Int
+        }.getOrNull() ?: if (userId == 0) {
+            runCatching { ctx.packageManager.getPackageUid(pkg, 0) }.getOrNull() ?: -1
+        } else {
+            -1
+        }
 
         val standbyBucket = runCatching {
-            val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
-            usm?.javaClass?.getMethod("getAppStandbyBucket", String::class.java)?.invoke(usm, pkg) as? Int
+            val asc = appStandbyController
+            if (asc != null) {
+                val m = asc.javaClass.getDeclaredMethod(
+                    "getAppStandbyBucket",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                ).apply { isAccessible = true }
+                m.invoke(asc, pkg, userId, android.os.SystemClock.elapsedRealtime(), false) as? Int
+            } else {
+                val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+                usm?.javaClass?.getMethod("getAppStandbyBucket", String::class.java)?.invoke(usm, pkg) as? Int
+            }
         }.getOrNull() ?: -1
 
         val dic = deviceIdleController
@@ -1387,38 +1627,37 @@ class MainHook : XposedModule() {
             true
         }
 
+        val suspended = MultiUserPackageHelper.isPackageSuspended(ctx, pkg, userId)
         val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val runningProcs = runCatching {
             am?.runningAppProcesses
-                ?.filter { it.pkgList?.contains(pkg) == true || it.processName.startsWith(pkg) }
+                ?.filter {
+                    MultiUserPackageHelper.userIdOfUid(it.uid) == userId &&
+                        (it.pkgList?.contains(pkg) == true || it.processName.substringBefore(':') == pkg)
+                }
                 ?.map { "${it.processName} (pid=${it.pid})" }
                 .orEmpty()
         }.getOrDefault(emptyList())
 
-        @Suppress("DEPRECATION")
-        val activeServices = runCatching {
-            am?.getRunningServices(200)
-                ?.filter { it.service.packageName == pkg }
-                ?.map { it.service.shortClassName }
-                ?.distinct()
-                .orEmpty()
-        }.getOrDefault(emptyList())
+        val activeServices = SystemTelemetryHelper.collectAppServices(amsInstance, am, pkg, userId)
 
         return PkgRuntimeStatus(
             packageName = pkg,
+            userId = userId,
             available = true,
             standbyBucket = standbyBucket,
             dozeWhitelisted = realDozeWhitelisted,
             runAnyInBgAllowed = runAnyInBgAllowed,
+            isSuspended = suspended,
             runningProcesses = runningProcs,
             activeServices = activeServices,
         )
     }
 
-    private fun recordEvent(pkg: String?, sub: BgSubsystem, action: String, detail: String = "") {
+    private fun recordEvent(pkg: String?, sub: BgSubsystem, action: String, detail: String = "", userId: Int = 0) {
         if (pkg.isNullOrBlank()) return
         val now = System.currentTimeMillis()
-        val key = "$pkg|${sub.key}|$action"
+        val key = "$userId|$pkg|${sub.key}|$action"
         val prev = eventCooldown[key]
         if (prev != null && now - prev < EVENT_COOLDOWN_MS) return
         eventCooldown[key] = now
@@ -1428,15 +1667,16 @@ class MainHook : XposedModule() {
             subsystemKey = sub.key,
             action = action,
             detail = detail,
+            userId = userId,
         )
         synchronized(eventLock) {
-            if (eventBuffer.size >= MAX_EVENTS) {
+            while (eventBuffer.size >= MAX_EVENTS) {
                 eventBuffer.removeFirst()
             }
             eventBuffer.addLast(ev)
         }
         if (globalFlags.verboseLog) {
-            log(Log.INFO, TAG, "Event: $pkg [${sub.key}] $action $detail")
+            log(Log.INFO, TAG, "Event: u$userId/$pkg [${sub.key}] $action $detail")
         }
     }
 
@@ -1459,12 +1699,34 @@ class MainHook : XposedModule() {
         return runCatching { m.invoke(obj) as? String }.getOrNull()
     }
 
+    private fun extractHansUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val m = getHansUidMethod ?: runCatching {
+            obj.javaClass.getMethod("getUid").also { getHansUidMethod = it }
+        }.getOrNull()
+        val uid = runCatching { m?.invoke(obj) as? Int }.getOrNull()
+            ?: MultiUserPackageHelper.extractFieldInt(obj, "mUid")
+            ?: return 0
+        return MultiUserPackageHelper.userIdOfUid(uid)
+    }
+
     private fun extractProcessRecordPkg(obj: Any?): String? {
         if (obj == null) return null
         val m = processRecordAppInfoMethod ?: runCatching {
             obj.javaClass.getMethod("getApplicationInfo").also { processRecordAppInfoMethod = it }
         }.getOrNull() ?: return null
         return runCatching { (m.invoke(obj) as? ApplicationInfo)?.packageName }.getOrNull()
+    }
+
+    private fun extractProcessRecordUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val m = processRecordAppInfoMethod ?: runCatching {
+            obj.javaClass.getMethod("getApplicationInfo").also { processRecordAppInfoMethod = it }
+        }.getOrNull()
+        val appUid = runCatching { (m?.invoke(obj) as? ApplicationInfo)?.uid }.getOrNull()
+        if (appUid != null && appUid > 0) return MultiUserPackageHelper.userIdOfUid(appUid)
+        val uid = MultiUserPackageHelper.extractFieldInt(obj, "uid") ?: return 0
+        return MultiUserPackageHelper.userIdOfUid(uid)
     }
 
     private fun extractHostingType(pr: Any?): String? {
@@ -1485,6 +1747,17 @@ class MainHook : XposedModule() {
             obj.javaClass.getMethod("getPkgName").also { processInfoGetPkgMethod = it }
         }.getOrNull() ?: return null
         return runCatching { m.invoke(obj) as? String }.getOrNull()
+    }
+
+    private fun extractProcessInfoUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val m = processInfoGetUidMethod ?: runCatching {
+            obj.javaClass.getMethod("getUid").also { processInfoGetUidMethod = it }
+        }.getOrNull()
+        val uid = runCatching { m?.invoke(obj) as? Int }.getOrNull()
+            ?: MultiUserPackageHelper.extractFieldInt(obj, "mUid")
+            ?: return 0
+        return MultiUserPackageHelper.userIdOfUid(uid)
     }
 
     private fun extractOsenseProcInfoPkg(obj: Any?): String? {
@@ -1513,6 +1786,32 @@ class MainHook : XposedModule() {
         return runCatching { (fProc?.get(obj) as? String)?.substringBefore(':') }.getOrNull()
     }
 
+    private fun extractOsenseProcInfoUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val fInfo = osenseProcInfoAppInfoField ?: findDeclaredField(obj.javaClass, "info")?.also {
+            osenseProcInfoAppInfoField = it
+        }
+        val infoUid = runCatching { (fInfo?.get(obj) as? ApplicationInfo)?.uid }.getOrNull()
+        if (infoUid != null && infoUid > 0) return MultiUserPackageHelper.userIdOfUid(infoUid)
+
+        val fUid = osenseProcInfoUidField ?: findDeclaredField(obj.javaClass, "mUid")?.also {
+            osenseProcInfoUidField = it
+        }
+        val fieldUid = runCatching { fUid?.getInt(obj) }.getOrNull()
+        if (fieldUid != null && fieldUid > 0) return MultiUserPackageHelper.userIdOfUid(fieldUid)
+
+        val fApp = osenseProcInfoAppField ?: findDeclaredField(obj.javaClass, "mApp")?.also {
+            osenseProcInfoAppField = it
+        }
+        val appObj = runCatching { fApp?.get(obj) }.getOrNull()
+        if (appObj != null) return extractProcessRecordUserId(appObj)
+
+        val fGroup = osenseProcInfoGroupField ?: findDeclaredField(obj.javaClass, "mGroup")?.also {
+            osenseProcInfoGroupField = it
+        }
+        return extractOsenseGroupUserId(runCatching { fGroup?.get(obj) }.getOrNull())
+    }
+
     private fun setOsenseSkipReason(obj: Any?, reason: String) {
         if (obj == null) return
         val f = osenseProcInfoSkipField ?: findDeclaredField(obj.javaClass, "mSkipReason")?.also {
@@ -1527,6 +1826,16 @@ class MainHook : XposedModule() {
             osenseGroupPkgField = it
         } ?: return null
         return runCatching { f.get(obj) as? String }.getOrNull()
+    }
+
+    private fun extractOsenseGroupUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val fUid = osenseGroupUidField ?: findDeclaredField(obj.javaClass, "mUid")?.also {
+            osenseGroupUidField = it
+        }
+        val uid = runCatching { fUid?.getInt(obj) }.getOrNull()
+        if (uid != null && uid > 0) return MultiUserPackageHelper.userIdOfUid(uid)
+        return MultiUserPackageHelper.extractFieldInt(obj, "mUserId") ?: 0
     }
 
     private fun setOsenseGroupSkipReason(obj: Any?, reason: String) {
@@ -1566,12 +1875,46 @@ class MainHook : XposedModule() {
         return runCatching { f.get(obj) as? String }.getOrNull()
     }
 
+    private fun extractServiceRecordUserId(obj: Any?): Int {
+        if (obj == null) return 0
+        val fUser = serviceRecordUserField ?: findDeclaredField(obj.javaClass, "userId")?.also {
+            serviceRecordUserField = it
+        }
+        val userId = runCatching { fUser?.getInt(obj) }.getOrNull()
+        if (userId != null) return userId
+        val fAppInfo = serviceRecordAppInfoField ?: findDeclaredField(obj.javaClass, "appInfo")?.also {
+            serviceRecordAppInfoField = it
+        }
+        val uid = runCatching { (fAppInfo?.get(obj) as? ApplicationInfo)?.uid }.getOrNull() ?: return 0
+        return MultiUserPackageHelper.userIdOfUid(uid)
+    }
+
     private fun extractBroadcastFilterPkg(obj: Any?): String? {
         if (obj == null) return null
         val f = broadcastFilterPkgField ?: findDeclaredField(obj.javaClass, "packageName")?.also {
             broadcastFilterPkgField = it
         } ?: return null
         return runCatching { f.get(obj) as? String }.getOrNull()
+    }
+
+    private fun extractReceiverUserId(ri: ResolveInfo?, bf: Any?, br: Any?): Int {
+        val riUid = ri?.activityInfo?.applicationInfo?.uid
+        if (riUid != null && riUid > 0) return MultiUserPackageHelper.userIdOfUid(riUid)
+        if (bf != null) {
+            val f = broadcastFilterUidField ?: findDeclaredField(bf.javaClass, "owningUid")?.also {
+                broadcastFilterUidField = it
+            }
+            val uid = runCatching { f?.getInt(bf) }.getOrNull()
+            if (uid != null && uid > 0) return MultiUserPackageHelper.userIdOfUid(uid)
+        }
+        if (br != null) {
+            val f = broadcastRecordUserField ?: findDeclaredField(br.javaClass, "userId")?.also {
+                broadcastRecordUserField = it
+            }
+            val uid = runCatching { f?.getInt(br) }.getOrNull()
+            if (uid != null) return uid
+        }
+        return 0
     }
 
     private fun logMsg(priority: Int, msg: String, tr: Throwable? = null) {

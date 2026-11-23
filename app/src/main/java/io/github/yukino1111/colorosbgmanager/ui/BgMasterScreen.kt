@@ -3,6 +3,7 @@ package io.github.yukino1111.colorosbgmanager.ui
 import android.graphics.drawable.Drawable
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -27,13 +28,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.AddToHomeScreen
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ListAlt
+import androidx.compose.material.icons.rounded.AcUnit
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Block
@@ -46,6 +51,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
@@ -58,6 +64,7 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -89,6 +96,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -110,6 +118,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import io.github.yukino1111.colorosbgmanager.data.BgMasterUiState
 import io.github.yukino1111.colorosbgmanager.data.InstalledAppEntry
+import io.github.yukino1111.colorosbgmanager.model.AppUserKey
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.GlobalRuleFlags
 import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
@@ -139,7 +148,8 @@ enum class PolicyScopeFilter(val label: String) {
 
 private sealed interface ScreenRoute {
     data object Home : ScreenRoute
-    data class AppDetail(val packageName: String) : ScreenRoute
+    data class AppDetail(val target: AppUserKey) : ScreenRoute
+    data class AppProcessDetail(val target: AppUserKey) : ScreenRoute
     data object NativeLists : ScreenRoute
     data class NativeListDetail(val kind: NativeListKind) : ScreenRoute
 }
@@ -150,10 +160,16 @@ fun BgMasterScreen(
     state: BgMasterUiState,
     onRefreshAll: () -> Unit,
     onToggleLanguage: () -> Unit,
-    onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
-    onSetAllForPackage: (String, PolicyMode) -> Unit,
+    onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
+    onSetAllForPackage: (AppUserKey, PolicyMode) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
-    onLoadPackageRuntime: (String) -> Unit,
+    onLoadPackageRuntime: (String, Int) -> Unit,
+    onLoadProcesses: (Boolean) -> Unit,
+    onLoadRootProcesses: (Boolean) -> Unit,
+    onSetAutoFreeze: (AppUserKey, Boolean) -> Unit,
+    onSetPackageSuspended: (AppUserKey, Boolean) -> Unit,
+    onLaunchApp: (AppUserKey) -> Unit,
+    onPinShortcut: (InstalledAppEntry) -> Unit,
     onDismissMessage: () -> Unit,
 ) {
     val strings = stringsFor(state.language)
@@ -166,6 +182,12 @@ fun BgMasterScreen(
             onSetAllForPackage = onSetAllForPackage,
             onUpdateGlobals = onUpdateGlobals,
             onLoadPackageRuntime = onLoadPackageRuntime,
+            onLoadProcesses = onLoadProcesses,
+            onLoadRootProcesses = onLoadRootProcesses,
+            onSetAutoFreeze = onSetAutoFreeze,
+            onSetPackageSuspended = onSetPackageSuspended,
+            onLaunchApp = onLaunchApp,
+            onPinShortcut = onPinShortcut,
             onDismissMessage = onDismissMessage,
         )
     }
@@ -177,19 +199,36 @@ private fun BgMasterScreenContent(
     state: BgMasterUiState,
     onRefreshAll: () -> Unit,
     onToggleLanguage: () -> Unit,
-    onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
-    onSetAllForPackage: (String, PolicyMode) -> Unit,
+    onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
+    onSetAllForPackage: (AppUserKey, PolicyMode) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
-    onLoadPackageRuntime: (String) -> Unit,
+    onLoadPackageRuntime: (String, Int) -> Unit,
+    onLoadProcesses: (Boolean) -> Unit,
+    onLoadRootProcesses: (Boolean) -> Unit,
+    onSetAutoFreeze: (AppUserKey, Boolean) -> Unit,
+    onSetPackageSuspended: (AppUserKey, Boolean) -> Unit,
+    onLaunchApp: (AppUserKey) -> Unit,
+    onPinShortcut: (InstalledAppEntry) -> Unit,
     onDismissMessage: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    var route by remember { mutableStateOf<ScreenRoute>(ScreenRoute.Home) }
+    var backStack by remember { mutableStateOf<List<ScreenRoute>>(listOf(ScreenRoute.Home)) }
+    val route = backStack.last()
     var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     var appCategory by remember { mutableStateOf(AppCategory.USER) }
     var policyScopeFilter by remember { mutableStateOf(PolicyScopeFilter.ALL) }
-    var selectedSubsystem by remember { mutableStateOf<BgSubsystem?>(null) }
+    var selectedSubsystems by remember { mutableStateOf(BgSubsystem.entries.toSet()) }
+
+    var procSearchQuery by remember { mutableStateOf("") }
+    var procCategory by remember { mutableStateOf(ProcessCategoryFilter.USER) }
+
+    val homeTopAppBarState = rememberTopAppBarState()
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(homeTopAppBarState)
+    val overviewListState = rememberLazyListState()
+    val appsListState = rememberLazyListState()
+    val processesListState = rememberLazyListState()
+    val nativeListsIndexState = rememberLazyListState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -199,11 +238,17 @@ private fun BgMasterScreenContent(
         onDismissMessage()
     }
 
-    BackHandler(enabled = route != ScreenRoute.Home) {
-        route = when (route) {
-            is ScreenRoute.NativeListDetail -> ScreenRoute.NativeLists
-            else -> ScreenRoute.Home
+    val popBack: () -> Unit = {
+        if (backStack.size > 1) {
+            backStack = backStack.dropLast(1)
         }
+    }
+    val pushRoute: (ScreenRoute) -> Unit = { next ->
+        backStack = backStack + next
+    }
+
+    BackHandler(enabled = backStack.size > 1) {
+        popBack()
     }
 
     Surface(
@@ -214,6 +259,7 @@ private fun BgMasterScreenContent(
             targetState = route,
             transitionSpec = {
                 val goingBack = (initialState is ScreenRoute.NativeListDetail && targetState is ScreenRoute.NativeLists) ||
+                    (initialState is ScreenRoute.AppDetail && targetState is ScreenRoute.AppProcessDetail) ||
                     (initialState !is ScreenRoute.Home && targetState is ScreenRoute.Home)
                 if (goingBack) {
                     (slideInHorizontally(tween(240)) { -it / 6 } + fadeIn(tween(220))) togetherWith
@@ -227,7 +273,6 @@ private fun BgMasterScreenContent(
         ) { currentRoute ->
             when (currentRoute) {
                 ScreenRoute.Home -> {
-                    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
                     Scaffold(
                         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
                         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -286,59 +331,105 @@ private fun BgMasterScreenContent(
                                     icon = { Icon(Icons.Rounded.Apps, null) },
                                     label = { Text(strings.tabApps) },
                                 )
+                                NavigationBarItem(
+                                    selected = selectedTab == 2,
+                                    onClick = { selectedTab = 2 },
+                                    icon = { Icon(Icons.Rounded.Memory, null) },
+                                    label = { Text(strings.tabProcesses) },
+                                )
                             }
                         },
                     ) { padding ->
+                        val motionScheme = MaterialTheme.motionScheme
                         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-                            if (selectedTab == 0) {
-                                DashboardTab(
-                                    state = state,
-                                    onJumpToSubsystem = { sub ->
-                                        selectedSubsystem = sub
-                                        selectedTab = 1
-                                    },
-                                    onOpenNativeLists = { route = ScreenRoute.NativeLists },
-                                    onUpdateGlobals = onUpdateGlobals,
-                                    onRefreshAll = onRefreshAll,
-                                )
-                            } else {
-                                AppsTab(
-                                    state = state,
-                                    searchQuery = searchQuery,
-                                    onSearchChange = { searchQuery = it },
-                                    appCategory = appCategory,
-                                    onCategoryChange = { appCategory = it },
-                                    policyScopeFilter = policyScopeFilter,
-                                    onScopeFilterChange = { policyScopeFilter = it },
-                                    selectedSubsystem = selectedSubsystem,
-                                    onSubsystemChange = { selectedSubsystem = it },
-                                    onSetRule = onSetRule,
-                                    onOpenDetail = { pkg -> route = ScreenRoute.AppDetail(pkg) },
-                                )
+                            AnimatedContent(
+                                targetState = selectedTab,
+                                transitionSpec = {
+                                    fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
+                                        fadeOut(motionScheme.fastEffectsSpec())
+                                },
+                                label = "home_tab_transition",
+                            ) { tabIdx ->
+                                when (tabIdx) {
+                                    0 -> DashboardTab(
+                                        state = state,
+                                        listState = overviewListState,
+                                        onJumpToSubsystem = { sub ->
+                                            selectedSubsystems = setOf(sub)
+                                            selectedTab = 1
+                                        },
+                                        onOpenNativeLists = { pushRoute(ScreenRoute.NativeLists) },
+                                        onUpdateGlobals = onUpdateGlobals,
+                                        onRefreshAll = onRefreshAll,
+                                    )
+                                    1 -> AppsTab(
+                                        state = state,
+                                        listState = appsListState,
+                                        searchQuery = searchQuery,
+                                        onSearchChange = { searchQuery = it },
+                                        appCategory = appCategory,
+                                        onCategoryChange = { appCategory = it },
+                                        policyScopeFilter = policyScopeFilter,
+                                        onScopeFilterChange = { policyScopeFilter = it },
+                                        selectedSubsystems = selectedSubsystems,
+                                        onSubsystemsChange = { selectedSubsystems = it },
+                                        onSetRule = onSetRule,
+                                        onOpenDetail = { target -> pushRoute(ScreenRoute.AppDetail(target)) },
+                                    )
+                                    else -> ProcessesTab(
+                                        state = state,
+                                        listState = processesListState,
+                                        isActiveOnScreen = route == ScreenRoute.Home,
+                                        searchQuery = procSearchQuery,
+                                        onSearchChange = { procSearchQuery = it },
+                                        category = procCategory,
+                                        onCategoryChange = { procCategory = it },
+                                        onLoadProcesses = onLoadProcesses,
+                                        onLoadRootProcesses = onLoadRootProcesses,
+                                        onOpenProcessDetail = { target -> pushRoute(ScreenRoute.AppProcessDetail(target)) },
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
+                is ScreenRoute.AppProcessDetail -> {
+                    val appEntry = state.apps.firstOrNull { it.key == currentRoute.target }
+                    AppProcessDetailPage(
+                        target = currentRoute.target,
+                        appEntry = appEntry,
+                        state = state,
+                        onBack = popBack,
+                        onLoadProcesses = onLoadProcesses,
+                        onOpenAppSettings = { pushRoute(ScreenRoute.AppDetail(currentRoute.target)) },
+                    )
+                }
+
                 is ScreenRoute.AppDetail -> {
-                    val appEntry = state.apps.firstOrNull { it.packageName == currentRoute.packageName }
+                    val appEntry = state.apps.firstOrNull { it.key == currentRoute.target }
                     AppDetailPage(
-                        packageName = currentRoute.packageName,
+                        target = currentRoute.target,
                         appEntry = appEntry,
                         state = state,
                         snackbarHostState = snackbarHostState,
-                        onBack = { route = ScreenRoute.Home },
-                        onLoadRuntime = { onLoadPackageRuntime(currentRoute.packageName) },
-                        onSetRule = { sub, mode -> onSetRule(currentRoute.packageName, sub, mode) },
-                        onSetAll = { mode -> onSetAllForPackage(currentRoute.packageName, mode) },
+                        onBack = popBack,
+                        onLoadRuntime = { onLoadPackageRuntime(currentRoute.target.packageName, currentRoute.target.userId) },
+                        onSetRule = { sub, mode -> onSetRule(currentRoute.target, sub, mode) },
+                        onSetAll = { mode -> onSetAllForPackage(currentRoute.target, mode) },
+                        onSetAutoFreeze = { enabled -> onSetAutoFreeze(currentRoute.target, enabled) },
+                        onSetPackageSuspended = { suspend -> onSetPackageSuspended(currentRoute.target, suspend) },
+                        onLaunchApp = { onLaunchApp(currentRoute.target) },
+                        onPinShortcut = { appEntry?.let(onPinShortcut) },
                     )
                 }
 
                 ScreenRoute.NativeLists -> {
                     NativeListsIndexPage(
                         state = state,
-                        onBack = { route = ScreenRoute.Home },
-                        onSelectKind = { kind -> route = ScreenRoute.NativeListDetail(kind) },
+                        listState = nativeListsIndexState,
+                        onBack = popBack,
+                        onSelectKind = { kind -> pushRoute(ScreenRoute.NativeListDetail(kind)) },
                     )
                 }
 
@@ -346,7 +437,7 @@ private fun BgMasterScreenContent(
                     NativeListDetailPage(
                         kind = currentRoute.kind,
                         state = state,
-                        onBack = { route = ScreenRoute.NativeLists },
+                        onBack = popBack,
                     )
                 }
             }
@@ -357,6 +448,7 @@ private fun BgMasterScreenContent(
 @Composable
 private fun DashboardTab(
     state: BgMasterUiState,
+    listState: LazyListState,
     onJumpToSubsystem: (BgSubsystem) -> Unit,
     onOpenNativeLists: () -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
@@ -371,6 +463,7 @@ private fun DashboardTab(
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -589,6 +682,31 @@ private fun DashboardTab(
                         checked = state.globalFlags.verboseLog,
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(verboseLog = v) } },
                     )
+                    HorizontalDivider()
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(strings.autoFreezeDelayTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                strings.autoFreezeDelaySub(state.globalFlags.autoFreezeDelaySec),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        val delayOptions = listOf(5, 10, 20, 30)
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            delayOptions.forEachIndexed { idx, sec ->
+                                SegmentedButton(
+                                    selected = state.globalFlags.autoFreezeDelaySec == sec,
+                                    onClick = { onUpdateGlobals { it.copy(autoFreezeDelaySec = sec) } },
+                                    shape = SegmentedButtonDefaults.itemShape(idx, delayOptions.size),
+                                    label = { Text("${sec}s") },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -614,31 +732,87 @@ private fun DashboardTab(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
+internal fun <T> PopupFilterButton(
+    selectedLabel: String,
+    icon: ImageVector,
+    items: List<T>,
+    itemLabel: (T) -> String,
+    isSelected: (T) -> Boolean,
+    onSelect: (T) -> Unit,
+    showTrailingChevron: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilledTonalButton(
+            onClick = { expanded = true },
+            shapes = ButtonDefaults.shapes(),
+            contentPadding = contentPadding,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(selectedLabel, maxLines = 1)
+            if (showTrailingChevron) {
+                Spacer(Modifier.width(2.dp))
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            items.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(itemLabel(item)) },
+                    leadingIcon = {
+                        if (isSelected(item)) {
+                            Icon(Icons.Rounded.Check, contentDescription = null)
+                        }
+                    },
+                    onClick = {
+                        onSelect(item)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
 private fun AppsTab(
     state: BgMasterUiState,
+    listState: LazyListState,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     appCategory: AppCategory,
     onCategoryChange: (AppCategory) -> Unit,
     policyScopeFilter: PolicyScopeFilter,
     onScopeFilterChange: (PolicyScopeFilter) -> Unit,
-    selectedSubsystem: BgSubsystem?,
-    onSubsystemChange: (BgSubsystem?) -> Unit,
-    onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
-    onOpenDetail: (String) -> Unit,
+    selectedSubsystems: Set<BgSubsystem>,
+    onSubsystemsChange: (Set<BgSubsystem>) -> Unit,
+    onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
+    onOpenDetail: (AppUserKey) -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    var scopeMenuExpanded by remember { mutableStateOf(false) }
+    val motionScheme = MaterialTheme.motionScheme
     var nativeSectionExpanded by remember { mutableStateOf(true) }
+    val allSubsystemsSelected = selectedSubsystems.size == BgSubsystem.entries.size
 
     val groupedApps = remember(
         state.apps,
         state.rules,
         state.snapshot,
+        state.autoFreezePkgs,
         searchQuery,
         appCategory,
         policyScopeFilter,
-        selectedSubsystem,
+        selectedSubsystems,
     ) {
         val q = searchQuery.trim().lowercase()
         val overridden = ArrayList<InstalledAppEntry>()
@@ -658,10 +832,11 @@ private fun AppsTab(
                     app.packageName.lowercase().contains(q)
                 catOk && queryOk
             }
-            .sortedBy { it.label.lowercase() }
+            .sortedWith(compareBy<InstalledAppEntry> { it.label.lowercase() }.thenBy { it.userId })
             .forEach { app ->
-                val isOverridden = hasOverrideInDimension(state.rules, app.packageName, selectedSubsystem)
-                val isNativeHit = isManagedBySystemInDimension(state.snapshot, app.packageName, selectedSubsystem)
+                val isOverridden = hasOverrideInDimensions(state.rules, app.key, selectedSubsystems) ||
+                    (allSubsystemsSelected && app.key in state.autoFreezePkgs)
+                val isNativeHit = isManagedBySystemInDimensions(state.snapshot, app.packageName, selectedSubsystems)
                 val passesScope = when (policyScopeFilter) {
                     PolicyScopeFilter.ALL -> true
                     PolicyScopeFilter.OVERRIDDEN -> isOverridden
@@ -686,7 +861,9 @@ private fun AppsTab(
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .animateContentSize(animationSpec = motionScheme.defaultSpatialSpec()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
@@ -697,53 +874,22 @@ private fun AppsTab(
                     value = searchQuery,
                     onValueChange = onSearchChange,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(24.dp),
+                    shape = RoundedCornerShape(28.dp),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Rounded.Search, null) },
                     placeholder = { Text(strings.searchAppsPlaceholder) },
                 )
 
-                Box {
-                    FilledTonalButton(
-                        onClick = { scopeMenuExpanded = true },
-                        shape = RoundedCornerShape(20.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
-                    ) {
-                        Icon(Icons.Rounded.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(strings.policyScopeLabel(policyScopeFilter), maxLines = 1)
-                    }
-                    DropdownMenu(
-                        expanded = scopeMenuExpanded,
-                        onDismissRequest = { scopeMenuExpanded = false },
-                    ) {
-                        PolicyScopeFilter.entries.forEach { f ->
-                            DropdownMenuItem(
-                                text = { Text(strings.policyScopeLabel(f)) },
-                                leadingIcon = {
-                                    if (policyScopeFilter == f) {
-                                        Icon(Icons.Rounded.Check, contentDescription = null)
-                                    }
-                                },
-                                onClick = {
-                                    onScopeFilterChange(f)
-                                    scopeMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                AppCategory.entries.forEachIndexed { index, cat ->
-                    SegmentedButton(
-                        selected = appCategory == cat,
-                        onClick = { onCategoryChange(cat) },
-                        shape = SegmentedButtonDefaults.itemShape(index, AppCategory.entries.size),
-                        label = { Text(strings.appCategoryLabel(cat)) },
-                    )
-                }
+                PopupFilterButton(
+                    selectedLabel = strings.policyScopeLabel(policyScopeFilter),
+                    icon = Icons.Rounded.FilterList,
+                    items = PolicyScopeFilter.entries,
+                    itemLabel = { strings.policyScopeLabel(it) },
+                    isSelected = { it == policyScopeFilter },
+                    onSelect = onScopeFilterChange,
+                    showTrailingChevron = false,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+                )
             }
 
             Row(
@@ -751,17 +897,41 @@ private fun AppsTab(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChip(
-                    selected = selectedSubsystem == null,
-                    onClick = { onSubsystemChange(null) },
+                    selected = allSubsystemsSelected,
+                    onClick = {
+                        onSubsystemsChange(
+                            if (allSubsystemsSelected) emptySet() else BgSubsystem.entries.toSet(),
+                        )
+                    },
                     label = { Text(strings.allDimensions) },
                 )
                 BgSubsystem.entries.forEach { sub ->
+                    val checked = sub in selectedSubsystems
                     FilterChip(
-                        selected = selectedSubsystem == sub,
-                        onClick = { onSubsystemChange(sub) },
+                        selected = checked,
+                        onClick = {
+                            onSubsystemsChange(
+                                if (checked) selectedSubsystems - sub else selectedSubsystems + sub,
+                            )
+                        },
                         label = { Text(strings.subsystemShort(sub)) },
                     )
                 }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PopupFilterButton(
+                    selectedLabel = strings.appCategoryLabel(appCategory),
+                    icon = Icons.Rounded.Apps,
+                    items = AppCategory.entries,
+                    itemLabel = { strings.appCategoryLabel(it) },
+                    isSelected = { it == appCategory },
+                    onSelect = onCategoryChange,
+                )
             }
         }
 
@@ -771,6 +941,7 @@ private fun AppsTab(
             }
         } else {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -784,12 +955,18 @@ private fun AppsTab(
                             accent = true,
                         )
                     }
-                    items(groupedApps.overridden, key = { "ov_${it.packageName}" }) { app ->
+                    items(groupedApps.overridden, key = { "ov_${it.userId}|${it.packageName}" }) { app ->
                         AppRowItem(
                             app = app,
-                            pkgRules = state.rules[app.packageName].orEmpty(),
+                            pkgRules = state.rules[app.key].orEmpty(),
+                            isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
-                            selectedSubsystem = selectedSubsystem,
+                            selectedSubsystems = selectedSubsystems,
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = motionScheme.defaultEffectsSpec(),
+                                placementSpec = motionScheme.defaultSpatialSpec(),
+                                fadeOutSpec = motionScheme.fastEffectsSpec(),
+                            ),
                             onSetRule = onSetRule,
                             onOpenDetail = onOpenDetail,
                         )
@@ -809,12 +986,18 @@ private fun AppsTab(
                         )
                     }
                     if (nativeSectionExpanded) {
-                        items(groupedApps.nativeHits, key = { "nat_${it.packageName}" }) { app ->
+                        items(groupedApps.nativeHits, key = { "nat_${it.userId}|${it.packageName}" }) { app ->
                             AppRowItem(
                                 app = app,
-                                pkgRules = state.rules[app.packageName].orEmpty(),
+                                pkgRules = state.rules[app.key].orEmpty(),
+                                isAutoFreeze = app.key in state.autoFreezePkgs,
                                 snapshot = state.snapshot,
-                                selectedSubsystem = selectedSubsystem,
+                                selectedSubsystems = selectedSubsystems,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = motionScheme.defaultEffectsSpec(),
+                                    placementSpec = motionScheme.defaultSpatialSpec(),
+                                    fadeOutSpec = motionScheme.fastEffectsSpec(),
+                                ),
                                 onSetRule = onSetRule,
                                 onOpenDetail = onOpenDetail,
                             )
@@ -831,12 +1014,18 @@ private fun AppsTab(
                             accent = false,
                         )
                     }
-                    items(groupedApps.neutral, key = { "neu_${it.packageName}" }) { app ->
+                    items(groupedApps.neutral, key = { "neu_${it.userId}|${it.packageName}" }) { app ->
                         AppRowItem(
                             app = app,
-                            pkgRules = state.rules[app.packageName].orEmpty(),
+                            pkgRules = state.rules[app.key].orEmpty(),
+                            isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
-                            selectedSubsystem = selectedSubsystem,
+                            selectedSubsystems = selectedSubsystems,
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = motionScheme.defaultEffectsSpec(),
+                                placementSpec = motionScheme.defaultSpatialSpec(),
+                                fadeOutSpec = motionScheme.fastEffectsSpec(),
+                            ),
                             onSetRule = onSetRule,
                             onOpenDetail = onOpenDetail,
                         )
@@ -873,7 +1062,7 @@ private data class GroupedAppSections(
 }
 
 @Composable
-private fun SectionHeaderRow(
+internal fun SectionHeaderRow(
     icon: ImageVector,
     title: String,
     count: Int,
@@ -915,36 +1104,45 @@ private fun SectionHeaderRow(
 private fun AppRowItem(
     app: InstalledAppEntry,
     pkgRules: Map<BgSubsystem, PolicyMode>,
+    isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
-    selectedSubsystem: BgSubsystem?,
-    onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
-    onOpenDetail: (String) -> Unit,
+    selectedSubsystems: Set<BgSubsystem>,
+    modifier: Modifier = Modifier,
+    onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
+    onOpenDetail: (AppUserKey) -> Unit,
 ) {
-    if (selectedSubsystem != null) {
+    if (selectedSubsystems.size == 1) {
+        val singleSub = selectedSubsystems.first()
         SingleDimensionAppCard(
             app = app,
-            subsystem = selectedSubsystem,
-            nativeResolution = snapshot.nativeResolutionFor(app.packageName, selectedSubsystem),
-            currentMode = pkgRules[selectedSubsystem] ?: PolicyMode.FOLLOW_SYSTEM,
-            onModeSelected = { mode -> onSetRule(app.packageName, selectedSubsystem, mode) },
-            onOpenDetail = { onOpenDetail(app.packageName) },
+            subsystem = singleSub,
+            nativeResolution = snapshot.nativeResolutionFor(app.packageName, singleSub),
+            currentMode = pkgRules[singleSub] ?: PolicyMode.FOLLOW_SYSTEM,
+            modifier = modifier,
+            onModeSelected = { mode -> onSetRule(app.key, singleSub, mode) },
+            onOpenDetail = { onOpenDetail(app.key) },
         )
     } else {
         AllDimensionsAppCard(
             app = app,
             pkgRules = pkgRules,
+            isAutoFreeze = isAutoFreeze,
             snapshot = snapshot,
-            onClick = { onOpenDetail(app.packageName) },
+            selectedSubsystems = selectedSubsystems,
+            modifier = modifier,
+            onClick = { onOpenDetail(app.key) },
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun SingleDimensionAppCard(
     app: InstalledAppEntry,
     subsystem: BgSubsystem,
     nativeResolution: io.github.yukino1111.colorosbgmanager.model.NativeResolution,
     currentMode: PolicyMode,
+    modifier: Modifier = Modifier,
     onModeSelected: (PolicyMode) -> Unit,
     onOpenDetail: () -> Unit,
 ) {
@@ -952,10 +1150,11 @@ private fun SingleDimensionAppCard(
     var menuExpanded by remember { mutableStateOf(false) }
 
     ElevatedCard(
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpenDetail),
+            .clickable(onClick = onOpenDetail)
+            .animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -964,13 +1163,25 @@ private fun SingleDimensionAppCard(
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    app.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        app.label,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (app.userId != 0) {
+                        StatusPill(text = strings.userBadge(app.userId), active = true)
+                    }
+                    if (app.isSuspended) {
+                        StatusPill(text = strings.freezeStatusSuspended, active = false)
+                    }
+                }
                 Text(
                     app.packageName,
                     style = MaterialTheme.typography.bodySmall,
@@ -1017,23 +1228,26 @@ private fun SingleDimensionAppCard(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun AllDimensionsAppCard(
     app: InstalledAppEntry,
     pkgRules: Map<BgSubsystem, PolicyMode>,
+    isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
+    selectedSubsystems: Set<BgSubsystem>,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    val overrides = remember(pkgRules) {
-        BgSubsystem.entries.mapNotNull { sub ->
+    val overrides = remember(pkgRules, selectedSubsystems) {
+        BgSubsystem.entries.filter { it in selectedSubsystems }.mapNotNull { sub ->
             val mode = pkgRules[sub] ?: PolicyMode.FOLLOW_SYSTEM
             if (mode != PolicyMode.FOLLOW_SYSTEM) sub to mode else null
         }
     }
-    val nativeNonNeutral = remember(app.packageName, pkgRules, snapshot) {
-        BgSubsystem.entries.mapNotNull { sub ->
+    val nativeNonNeutral = remember(app.packageName, pkgRules, snapshot, selectedSubsystems) {
+        BgSubsystem.entries.filter { it in selectedSubsystems }.mapNotNull { sub ->
             val mode = pkgRules[sub] ?: PolicyMode.FOLLOW_SYSTEM
             val native = snapshot.nativeResolutionFor(app.packageName, sub)
             if (mode == PolicyMode.FOLLOW_SYSTEM && native.state != NativeState.NEUTRAL) sub to native else null
@@ -1041,10 +1255,11 @@ private fun AllDimensionsAppCard(
     }
 
     ElevatedCard(
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -1054,13 +1269,25 @@ private fun AllDimensionsAppCard(
                 DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        app.label,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            app.label,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (app.userId != 0) {
+                            StatusPill(text = strings.userBadge(app.userId), active = true)
+                        }
+                        if (app.isSuspended) {
+                            StatusPill(text = strings.freezeStatusSuspended, active = false)
+                        }
+                    }
                     Text(
                         app.packageName,
                         style = MaterialTheme.typography.bodySmall,
@@ -1074,7 +1301,7 @@ private fun AllDimensionsAppCard(
                 }
             }
 
-            if (overrides.isEmpty() && nativeNonNeutral.isEmpty()) {
+            if (overrides.isEmpty() && nativeNonNeutral.isEmpty() && !isAutoFreeze) {
                 Text(
                     text = strings.defaultRulesText,
                     style = MaterialTheme.typography.labelSmall,
@@ -1085,6 +1312,9 @@ private fun AllDimensionsAppCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (isAutoFreeze) {
+                        StatusPill(text = strings.autoFreezeSwitchTitle, active = true)
+                    }
                     overrides.forEach { (sub, mode) ->
                         val origNative = snapshot.nativeResolutionFor(app.packageName, sub)
                         val origSuffix = if (origNative.state != NativeState.NEUTRAL) {
@@ -1113,7 +1343,7 @@ private fun AllDimensionsAppCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppDetailPage(
-    packageName: String,
+    target: AppUserKey,
     appEntry: InstalledAppEntry?,
     state: BgMasterUiState,
     snackbarHostState: SnackbarHostState,
@@ -1121,13 +1351,24 @@ private fun AppDetailPage(
     onLoadRuntime: () -> Unit,
     onSetRule: (BgSubsystem, PolicyMode) -> Unit,
     onSetAll: (PolicyMode) -> Unit,
+    onSetAutoFreeze: (Boolean) -> Unit,
+    onSetPackageSuspended: (Boolean) -> Unit,
+    onLaunchApp: () -> Unit,
+    onPinShortcut: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    val pkgRules = state.rules[packageName].orEmpty()
-    val runtime = state.detailRuntime?.takeIf { it.packageName == packageName }
-    val appEvents = if (state.detailRuntime?.packageName == packageName) state.detailEvents else emptyList()
+    val packageName = target.packageName
+    val pkgRules = state.rules[target].orEmpty()
+    val runtime = state.detailRuntime?.takeIf { it.packageName == packageName && it.userId == target.userId }
+    val appEvents = if (runtime != null) {
+        state.detailEvents
+    } else {
+        emptyList()
+    }
+    val isSuspended = runtime?.isSuspended ?: appEntry?.isSuspended ?: false
+    val isAutoFreeze = target in state.autoFreezePkgs
 
-    LaunchedEffect(packageName, state.snapshot.serverInjected) {
+    LaunchedEffect(target, state.snapshot.serverInjected) {
         if (state.snapshot.serverInjected) {
             onLoadRuntime()
         }
@@ -1149,11 +1390,20 @@ private fun AppDetailPage(
                             Spacer(Modifier.width(10.dp))
                         }
                         Column {
-                            Text(
-                                appEntry?.label ?: packageName,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    appEntry?.label ?: packageName,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (target.userId != 0) {
+                                    StatusPill(text = strings.userBadge(target.userId), active = true)
+                                }
+                            }
                             Text(
                                 packageName,
                                 style = MaterialTheme.typography.labelSmall,
@@ -1208,6 +1458,17 @@ private fun AppDetailPage(
             if (state.snapshot.serverInjected) {
                 item {
                     RuntimeStatusCard(runtime = runtime)
+                }
+                item {
+                    FreezeControlCard(
+                        isSuspended = isSuspended,
+                        isAutoFreeze = isAutoFreeze,
+                        canPinShortcut = appEntry != null,
+                        onSetAutoFreeze = onSetAutoFreeze,
+                        onSetSuspended = onSetPackageSuspended,
+                        onLaunchApp = onLaunchApp,
+                        onPinShortcut = onPinShortcut,
+                    )
                 }
             }
 
@@ -1303,6 +1564,92 @@ private fun AppDetailPage(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun FreezeControlCard(
+    isSuspended: Boolean,
+    isAutoFreeze: Boolean,
+    canPinShortcut: Boolean,
+    onSetAutoFreeze: (Boolean) -> Unit,
+    onSetSuspended: (Boolean) -> Unit,
+    onLaunchApp: () -> Unit,
+    onPinShortcut: () -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    ElevatedCard(
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Rounded.AcUnit, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(
+                        strings.sectionFreezeControl,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                StatusPill(
+                    text = if (isSuspended) strings.freezeStatusSuspended else strings.freezeStatusActive,
+                    active = !isSuspended,
+                )
+            }
+
+            GlobalToggleRow(
+                title = strings.autoFreezeSwitchTitle,
+                subtitle = strings.autoFreezeSwitchSub,
+                checked = isAutoFreeze,
+                onCheckedChange = onSetAutoFreeze,
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { onSetSuspended(!isSuspended) },
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Icon(Icons.Rounded.AcUnit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isSuspended) strings.actionUnfreezeNow else strings.actionFreezeNow)
+                }
+                Button(
+                    onClick = onLaunchApp,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(strings.actionLaunchInApp)
+                }
+                if (canPinShortcut) {
+                    FilledTonalButton(
+                        onClick = onPinShortcut,
+                        shapes = ButtonDefaults.shapes(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.AddToHomeScreen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(strings.actionPinShortcut)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RuntimeStatusCard(
@@ -1384,8 +1731,9 @@ private fun RuntimeEventsCard(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
+                            val userPrefix = if (ev.userId != 0) "[u${ev.userId}] " else ""
                             val title = if (showPackageName) {
-                                "${ev.pkgName} · ${strings.formatRuntimeAction(ev.action)}"
+                                "$userPrefix${ev.pkgName} · ${strings.formatRuntimeAction(ev.action)}"
                             } else {
                                 strings.formatRuntimeAction(ev.action)
                             }
@@ -1423,6 +1771,7 @@ private fun RuntimeEventsCard(
 @Composable
 private fun NativeListsIndexPage(
     state: BgMasterUiState,
+    listState: LazyListState,
     onBack: () -> Unit,
     onSelectKind: (NativeListKind) -> Unit,
 ) {
@@ -1444,6 +1793,7 @@ private fun NativeListsIndexPage(
         },
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize(),
@@ -1539,7 +1889,9 @@ private fun NativeListDetailPage(
 ) {
     val strings = LocalAppStrings.current
     var search by remember { mutableStateOf("") }
-    val appMap = remember(state.apps) { state.apps.associateBy { it.packageName } }
+    val appMap = remember(state.apps) {
+        state.apps.sortedByDescending { it.userId }.associateBy { it.packageName }
+    }
     val rawSet = state.snapshot.listOfKind(kind)
 
     val sortedEntries = remember(rawSet, search, appMap) {
@@ -1665,7 +2017,7 @@ private fun GlobalToggleRow(
 }
 
 @Composable
-private fun StatusPill(text: String, active: Boolean) {
+internal fun StatusPill(text: String, active: Boolean) {
     Surface(
         shape = RoundedCornerShape(50),
         color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1860,7 +2212,7 @@ private fun ModeSelectorPill(
 }
 
 @Composable
-private fun DrawableIcon(drawable: Drawable, modifier: Modifier = Modifier) {
+internal fun DrawableIcon(drawable: Drawable, modifier: Modifier = Modifier) {
     val bitmap = remember(drawable) { drawable.toBitmap(width = 96, height = 96).asImageBitmap() }
     Image(
         bitmap = bitmap,
@@ -1869,29 +2221,25 @@ private fun DrawableIcon(drawable: Drawable, modifier: Modifier = Modifier) {
     )
 }
 
-private fun hasOverrideInDimension(
-    rules: Map<String, Map<BgSubsystem, PolicyMode>>,
-    pkgName: String,
-    subsystem: BgSubsystem?,
+private fun hasOverrideInDimensions(
+    rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>>,
+    target: AppUserKey,
+    subsystems: Set<BgSubsystem>,
 ): Boolean {
-    val pkgMap = rules[pkgName] ?: return false
-    return if (subsystem == null) {
-        pkgMap.values.any { it != PolicyMode.FOLLOW_SYSTEM }
-    } else {
-        (pkgMap[subsystem] ?: PolicyMode.FOLLOW_SYSTEM) != PolicyMode.FOLLOW_SYSTEM
+    if (subsystems.isEmpty()) return false
+    val pkgMap = rules[target] ?: return false
+    return subsystems.any { sub ->
+        (pkgMap[sub] ?: PolicyMode.FOLLOW_SYSTEM) != PolicyMode.FOLLOW_SYSTEM
     }
 }
 
-private fun isManagedBySystemInDimension(
+private fun isManagedBySystemInDimensions(
     snapshot: SystemSnapshot,
     pkgName: String,
-    subsystem: BgSubsystem?,
+    subsystems: Set<BgSubsystem>,
 ): Boolean {
-    return if (subsystem == null) {
-        BgSubsystem.entries.any { snapshot.nativeStateFor(pkgName, it) != NativeState.NEUTRAL }
-    } else {
-        snapshot.nativeStateFor(pkgName, subsystem) != NativeState.NEUTRAL
-    }
+    if (subsystems.isEmpty()) return false
+    return subsystems.any { snapshot.nativeStateFor(pkgName, it) != NativeState.NEUTRAL }
 }
 
 private fun iconForSubsystem(sub: BgSubsystem): ImageVector = when (sub) {

@@ -2,6 +2,7 @@ package io.github.yukino1111.colorosbgmanager.ui
 
 import androidx.compose.runtime.staticCompositionLocalOf
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
+import io.github.yukino1111.colorosbgmanager.model.DeviceUserInfo
 import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
 import io.github.yukino1111.colorosbgmanager.model.NativeListKind
 import io.github.yukino1111.colorosbgmanager.model.NativeResolution
@@ -34,6 +35,7 @@ data class AppStrings(
     val refreshCd: String,
     val tabOverview: String,
     val tabApps: String,
+    val tabProcesses: String,
     val statusActive: String,
     val statusInactive: String,
     val enableInLsposedHint: String,
@@ -104,6 +106,43 @@ data class AppStrings(
     val runtimeNotWhitelisted: String,
     val runtimeNotRunning: String,
     val sectionAppEvents: String,
+    val searchRootPlaceholder: String,
+    val showKernelThreads: String,
+    val allUsersChip: String,
+    val userBadge: (Int) -> String,
+    val rootUnavailableHint: (String?) -> String,
+    val retryRootButton: String,
+    val processGroupRunning: String,
+    val processGroupCached: String,
+    val processGroupStopped: String,
+    val processGroupRoot: String,
+    val procMemLabel: String,
+    val procCpuLabel: String,
+    val procUptimeLabel: String,
+    val procStateLabel: String,
+    val procAndSvcCount: (Int, Int) -> String,
+    val hostedServicesCount: (Int) -> String,
+    val noActiveServices: String,
+    val extraServicesHeader: String,
+    val closeDialog: String,
+    val openAppSettingsCd: String,
+    val sectionFreezeControl: String,
+    val autoFreezeSwitchTitle: String,
+    val autoFreezeSwitchSub: String,
+    val freezeStatusSuspended: String,
+    val freezeStatusActive: String,
+    val actionFreezeNow: String,
+    val actionUnfreezeNow: String,
+    val actionLaunchInApp: String,
+    val actionPinShortcut: String,
+    val autoFreezeDelayTitle: String,
+    val autoFreezeDelaySub: (Int) -> String,
+    val toastSuspendOk: String,
+    val toastUnsuspendOk: String,
+    val toastActionFailed: String,
+    val toastLaunchFailed: String,
+    val toastShortcutRequested: String,
+    val toastShortcutUnsupported: String,
 ) {
     fun subsystemTitle(sub: BgSubsystem): String = when (language) {
         AppLanguage.ZH -> sub.title
@@ -304,6 +343,34 @@ data class AppStrings(
         }
     }
 
+    fun processCategoryLabel(cat: ProcessCategoryFilter): String = when (language) {
+        AppLanguage.ZH -> when (cat) {
+            ProcessCategoryFilter.ALL -> "全部"
+            ProcessCategoryFilter.USER -> "用户"
+            ProcessCategoryFilter.SYSTEM -> "系统"
+            ProcessCategoryFilter.ROOT -> "Root"
+        }
+        AppLanguage.EN -> when (cat) {
+            ProcessCategoryFilter.ALL -> "All"
+            ProcessCategoryFilter.USER -> "User"
+            ProcessCategoryFilter.SYSTEM -> "System"
+            ProcessCategoryFilter.ROOT -> "Root"
+        }
+    }
+
+    fun userFilterChipLabel(user: DeviceUserInfo): String = when (language) {
+        AppLanguage.ZH -> when {
+            user.userId == 0 -> "机主 (u0)"
+            user.isClone -> "分身 (u${user.userId})"
+            else -> "${user.name} (u${user.userId})"
+        }
+        AppLanguage.EN -> when {
+            user.userId == 0 -> "Owner (u0)"
+            user.isClone -> "Clone (u${user.userId})"
+            else -> "${user.name} (u${user.userId})"
+        }
+    }
+
     fun formatRuntimeAction(action: String): String = when (language) {
         AppLanguage.ZH -> when (action) {
             "skip_nirvana" -> "拦截 Nirvana 清理"
@@ -321,6 +388,10 @@ data class AppStrings(
             "skip_oguard" -> "拦截 OGuard 省电杀"
             "sync_doze_add" -> "同步加入 Doze 白名单"
             "sync_doze_remove" -> "同步移出 Doze 白名单"
+            "auto_suspend" -> "无后台自动冻结"
+            "manual_suspend" -> "手动冻结 (pm suspend)"
+            "manual_unsuspend" -> "手动解冻"
+            "unsuspend_launch" -> "解冻并直启"
             else -> action
         }
         AppLanguage.EN -> when (action) {
@@ -339,6 +410,10 @@ data class AppStrings(
             "skip_oguard" -> "Skipped OGuard kill"
             "sync_doze_add" -> "Added to Doze whitelist"
             "sync_doze_remove" -> "Removed from Doze whitelist"
+            "auto_suspend" -> "Auto-suspended (no BG)"
+            "manual_suspend" -> "Suspended (pm suspend)"
+            "manual_unsuspend" -> "Unsuspended"
+            "unsuspend_launch" -> "Unsuspended & launched"
             else -> action
         }
     }
@@ -364,6 +439,7 @@ val ZhAppStrings = AppStrings(
     refreshCd = "刷新",
     tabOverview = "总览",
     tabApps = "应用",
+    tabProcesses = "进程",
     statusActive = "已激活",
     statusInactive = "未激活",
     enableInLsposedHint = "请在 LSPosed 启用并勾选「系统框架 (android)」",
@@ -434,6 +510,43 @@ val ZhAppStrings = AppStrings(
     runtimeNotWhitelisted = "未加入",
     runtimeNotRunning = "未运行",
     sectionAppEvents = "应用调度日志",
+    searchRootPlaceholder = "搜索命令、进程或 PID",
+    showKernelThreads = "显示内核线程",
+    allUsersChip = "全部用户",
+    userBadge = { uid -> "u$uid" },
+    rootUnavailableHint = { err -> if (err.isNullOrBlank()) "需要 Root (su) 权限读取原生/特权进程" else "无法读取 Root 进程：$err（若用 KernelSU 请先授予本应用 Root 权限）" },
+    retryRootButton = "请求 Root 授权读取",
+    processGroupRunning = "运行中",
+    processGroupCached = "已缓存",
+    processGroupStopped = "未运行",
+    processGroupRoot = "原生与 Root 二进制",
+    procMemLabel = "内存",
+    procCpuLabel = "CPU",
+    procUptimeLabel = "运行",
+    procStateLabel = "状态",
+    procAndSvcCount = { p, s -> "$p 进程 · $s 服务" },
+    hostedServicesCount = { count -> "托管服务 ($count)" },
+    noActiveServices = "该进程暂无运行中服务",
+    extraServicesHeader = "未关联具体 PID 的服务",
+    closeDialog = "关闭",
+    openAppSettingsCd = "策略设置",
+    sectionFreezeControl = "应用冻结与启动 (pm suspend)",
+    autoFreezeSwitchTitle = "无后台时自动冻结",
+    autoFreezeSwitchSub = "进程退出、划掉任务或息屏并确认无活跃后台服务后自动 suspend",
+    freezeStatusSuspended = "已冻结",
+    freezeStatusActive = "正常",
+    actionFreezeNow = "立即冻结",
+    actionUnfreezeNow = "立即解冻",
+    actionLaunchInApp = "插件内启动",
+    actionPinShortcut = "桌面快捷启动",
+    autoFreezeDelayTitle = "无后台自动冻结等待时间",
+    autoFreezeDelaySub = { sec -> "确认无活跃前台/后台服务后延迟 ${sec} 秒执行 suspend" },
+    toastSuspendOk = "已执行 pm suspend 冻结",
+    toastUnsuspendOk = "已解冻应用",
+    toastActionFailed = "操作失败，请检查 system_server 注入或受保护限制",
+    toastLaunchFailed = "启动失败，未找到该用户的启动入口",
+    toastShortcutRequested = "已请求桌面添加直启快捷方式",
+    toastShortcutUnsupported = "当前桌面不支持创建固定快捷方式",
 )
 
 val EnAppStrings = AppStrings(
@@ -446,6 +559,7 @@ val EnAppStrings = AppStrings(
     refreshCd = "Refresh",
     tabOverview = "Overview",
     tabApps = "Apps",
+    tabProcesses = "Processes",
     statusActive = "Active",
     statusInactive = "Inactive",
     enableInLsposedHint = "Enable in LSPosed and select System Framework (android)",
@@ -516,6 +630,43 @@ val EnAppStrings = AppStrings(
     runtimeNotWhitelisted = "Not Listed",
     runtimeNotRunning = "Not running",
     sectionAppEvents = "App Dispatch Log",
+    searchRootPlaceholder = "Search cmdline, user, or PID",
+    showKernelThreads = "Show kernel threads",
+    allUsersChip = "All Users",
+    userBadge = { uid -> "u$uid" },
+    rootUnavailableHint = { err -> if (err.isNullOrBlank()) "Root (su) permission needed to inspect native binaries" else "Root query unavailable: $err (grant root in KernelSU/Magisk)" },
+    retryRootButton = "Request Root (su)",
+    processGroupRunning = "Running",
+    processGroupCached = "Cached",
+    processGroupStopped = "Not Running",
+    processGroupRoot = "Native & Root Binaries",
+    procMemLabel = "Mem",
+    procCpuLabel = "CPU",
+    procUptimeLabel = "Up",
+    procStateLabel = "State",
+    procAndSvcCount = { p, s -> "$p proc · $s svc" },
+    hostedServicesCount = { count -> "Hosted Services ($count)" },
+    noActiveServices = "No running services in this process",
+    extraServicesHeader = "Unmapped App Services",
+    closeDialog = "Close",
+    openAppSettingsCd = "App Settings",
+    sectionFreezeControl = "Freeze & Launch (pm suspend)",
+    autoFreezeSwitchTitle = "Auto-suspend when idle",
+    autoFreezeSwitchSub = "Suspend package after exit, swipe-kill, or screen off when no active services remain",
+    freezeStatusSuspended = "Suspended",
+    freezeStatusActive = "Active",
+    actionFreezeNow = "Suspend",
+    actionUnfreezeNow = "Unsuspend",
+    actionLaunchInApp = "Launch Here",
+    actionPinShortcut = "Desktop Shortcut",
+    autoFreezeDelayTitle = "Auto-suspend Delay",
+    autoFreezeDelaySub = { sec -> "Wait ${sec}s after no active foreground/service before suspending" },
+    toastSuspendOk = "Package suspended",
+    toastUnsuspendOk = "Package unsuspended",
+    toastActionFailed = "Action failed; check system_server injection",
+    toastLaunchFailed = "Launch failed for this user",
+    toastShortcutRequested = "Shortcut pin requested",
+    toastShortcutUnsupported = "Pinned shortcuts not supported by launcher",
 )
 
 fun stringsFor(lang: AppLanguage): AppStrings = when (lang) {

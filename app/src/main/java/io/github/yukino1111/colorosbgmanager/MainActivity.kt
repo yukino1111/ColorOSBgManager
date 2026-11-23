@@ -39,9 +39,23 @@ class MainActivity : ComponentActivity() {
                     onSetRule = syncClient::setRule,
                     onSetAllForPackage = syncClient::setAllSubsystemsForPackage,
                     onUpdateGlobals = syncClient::updateGlobalFlag,
-                    onLoadPackageRuntime = { pkg ->
-                        lifecycleScope.launch { syncClient.loadPackageRuntime(pkg) }
+                    onLoadPackageRuntime = { pkg, userId ->
+                        lifecycleScope.launch { syncClient.loadPackageRuntime(pkg, userId) }
                     },
+                    onLoadProcesses = { showSpinner ->
+                        lifecycleScope.launch { syncClient.loadProcesses(showSpinner) }
+                    },
+                    onLoadRootProcesses = { showSpinner ->
+                        lifecycleScope.launch { syncClient.loadRootProcesses(showSpinner) }
+                    },
+                    onSetAutoFreeze = syncClient::setAutoFreeze,
+                    onSetPackageSuspended = { target, suspend ->
+                        lifecycleScope.launch { syncClient.setPackageSuspended(target, suspend) }
+                    },
+                    onLaunchApp = { target ->
+                        lifecycleScope.launch { syncClient.launchApp(target) }
+                    },
+                    onPinShortcut = syncClient::pinLaunchShortcut,
                     onDismissMessage = syncClient::clearMessage,
                 )
             }

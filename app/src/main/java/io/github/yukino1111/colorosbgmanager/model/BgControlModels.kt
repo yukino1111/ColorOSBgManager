@@ -156,6 +156,166 @@ data class GlobalRuleFlags(
     val disableBroadcastQuotaGlobal: Boolean = false,
     val disableStrictModeFreeze: Boolean = false,
     val verboseLog: Boolean = false,
+    val autoFreezeDelaySec: Int = 10,
+)
+
+data class AppUserKey(
+    val packageName: String,
+    val userId: Int = 0,
+) {
+    val storageKey: String get() = "$userId|$packageName"
+
+    companion object {
+        fun parseStorageKey(raw: String): AppUserKey? {
+            val idx = raw.indexOf('|')
+            if (idx <= 0) {
+                val pkg = raw.trim()
+                return if (pkg.isNotEmpty()) AppUserKey(pkg, 0) else null
+            }
+            val uid = raw.substring(0, idx).toIntOrNull() ?: return null
+            val pkg = raw.substring(idx + 1).trim()
+            return if (pkg.isNotEmpty()) AppUserKey(pkg, uid) else null
+        }
+    }
+}
+
+data class DeviceUserInfo(
+    val userId: Int,
+    val name: String,
+    val isClone: Boolean = false,
+) {
+    fun encode(): String {
+        val cleanName = name.replace('\t', ' ').replace('\n', ' ')
+        return "$userId\t$cleanName\t${if (isClone) 1 else 0}"
+    }
+
+    companion object {
+        fun decode(raw: String): DeviceUserInfo? {
+            val parts = raw.split('\t', limit = 3)
+            if (parts.size < 2) return null
+            val uid = parts[0].toIntOrNull() ?: return null
+            val clone = parts.getOrNull(2) == "1"
+            return DeviceUserInfo(uid, parts[1], clone)
+        }
+    }
+}
+
+data class BridgeAppEntry(
+    val packageName: String,
+    val userId: Int,
+    val uid: Int,
+    val label: String,
+    val isSystem: Boolean,
+    val isSuspended: Boolean,
+) {
+    fun encode(): String {
+        val cleanLabel = label.replace('\t', ' ').replace('\n', ' ')
+        val sysFlag = if (isSystem) 1 else 0
+        val suspFlag = if (isSuspended) 1 else 0
+        return "$userId\t$uid\t$packageName\t$sysFlag\t$suspFlag\t$cleanLabel"
+    }
+
+    companion object {
+        fun decode(raw: String): BridgeAppEntry? {
+            val parts = raw.split('\t', limit = 6)
+            if (parts.size < 6) return null
+            val userId = parts[0].toIntOrNull() ?: return null
+            val uid = parts[1].toIntOrNull() ?: return null
+            val pkg = parts[2].trim()
+            if (pkg.isEmpty()) return null
+            return BridgeAppEntry(
+                packageName = pkg,
+                userId = userId,
+                uid = uid,
+                isSystem = parts[3] == "1",
+                isSuspended = parts[4] == "1",
+                label = parts[5].ifBlank { pkg },
+            )
+        }
+    }
+}
+
+enum class ProcessRunBucket {
+    RUNNING,
+    CACHED,
+    STOPPED,
+}
+
+data class ProcessDetailInfo(
+    val pid: Int,
+    val userId: Int,
+    val uid: Int,
+    val processName: String,
+    val packageName: String,
+    val stateLabel: String,
+    val isCached: Boolean,
+    val oomAdj: Int,
+    val memoryKb: Long,
+    val cpuPercent: Float,
+    val uptimeMs: Long,
+    val services: List<String> = emptyList(),
+) {
+    fun encode(): String {
+        val cleanProc = processName.replace('\t', ' ').replace('\n', ' ')
+        val cleanState = stateLabel.replace('\t', ' ').replace('\n', ' ')
+        val cleanSvcs = services.joinToString(",") { it.replace(',', '_').replace('\t', ' ').replace('\n', ' ') }
+        return "$pid\t$userId\t$uid\t$cleanProc\t$packageName\t$cleanState\t${if (isCached) 1 else 0}\t$oomAdj\t$memoryKb\t$cpuPercent\t$uptimeMs\t$cleanSvcs"
+    }
+
+    companion object {
+        fun decode(raw: String): ProcessDetailInfo? {
+            val parts = raw.split('\t', limit = 12)
+            if (parts.size < 11) return null
+            val pid = parts[0].toIntOrNull() ?: return null
+            val userId = parts[1].toIntOrNull() ?: return null
+            val uid = parts[2].toIntOrNull() ?: return null
+            val pkg = parts[4].trim()
+            if (pkg.isEmpty()) return null
+            val svcsRaw = parts.getOrNull(11).orEmpty()
+            val svcs = if (svcsRaw.isBlank()) emptyList() else svcsRaw.split(',').filter { it.isNotBlank() }
+            return ProcessDetailInfo(
+                pid = pid,
+                userId = userId,
+                uid = uid,
+                processName = parts[3],
+                packageName = pkg,
+                stateLabel = parts[5],
+                isCached = parts[6] == "1",
+                oomAdj = parts[7].toIntOrNull() ?: 1001,
+                memoryKb = parts[8].toLongOrNull() ?: 0L,
+                cpuPercent = parts[9].toFloatOrNull() ?: 0f,
+                uptimeMs = parts[10].toLongOrNull() ?: 0L,
+                services = svcs,
+            )
+        }
+    }
+}
+
+data class AppProcessSummary(
+    val packageName: String,
+    val userId: Int,
+    val bucket: ProcessRunBucket,
+    val totalMemoryKb: Long,
+    val totalCpuPercent: Float,
+    val maxUptimeMs: Long,
+    val processCount: Int,
+    val serviceCount: Int,
+    val processes: List<ProcessDetailInfo>,
+    val extraServices: List<String> = emptyList(),
+)
+
+data class RootProcessInfo(
+    val pid: Int,
+    val user: String,
+    val uid: Int,
+    val resKb: Long,
+    val shrKb: Long,
+    val state: String,
+    val cpuPercent: Float,
+    val cpuTime: String,
+    val elapsedTime: String,
+    val cmdline: String,
+    val isKernelThread: Boolean,
 )
 
 data class SystemSnapshot(
@@ -288,23 +448,26 @@ data class RuntimeEvent(
     val subsystemKey: String,
     val action: String,
     val detail: String = "",
+    val userId: Int = 0,
 ) {
     fun encode(): String {
         val cleanDetail = detail.replace('\t', ' ').replace('\n', ' ')
-        return "$timestampMs\t$pkgName\t$subsystemKey\t$action\t$cleanDetail"
+        return "$timestampMs\t$pkgName\t$subsystemKey\t$action\t$cleanDetail\t$userId"
     }
 
     companion object {
         fun decode(raw: String): RuntimeEvent? {
-            val parts = raw.split('\t', limit = 5)
+            val parts = raw.split('\t', limit = 6)
             if (parts.size < 4) return null
             val ts = parts[0].toLongOrNull() ?: return null
+            val parsedUserId = if (parts.size >= 6) parts[5].toIntOrNull() ?: 0 else 0
             return RuntimeEvent(
                 timestampMs = ts,
                 pkgName = parts[1],
                 subsystemKey = parts[2],
                 action = parts[3],
                 detail = parts.getOrElse(4) { "" },
+                userId = parsedUserId,
             )
         }
     }
@@ -312,34 +475,40 @@ data class RuntimeEvent(
 
 data class PkgRuntimeStatus(
     val packageName: String = "",
+    val userId: Int = 0,
     val available: Boolean = false,
     val standbyBucket: Int = -1,
     val dozeWhitelisted: Boolean = false,
     val runAnyInBgAllowed: Boolean = true,
+    val isSuspended: Boolean = false,
     val runningProcesses: List<String> = emptyList(),
     val activeServices: List<String> = emptyList(),
 ) {
     fun toBundle(): Bundle = Bundle().apply {
         putBoolean("ok", available)
         putString("pkg", packageName)
+        putInt("user_id", userId)
         putInt("standby_bucket", standbyBucket)
         putBoolean("doze_whitelisted", dozeWhitelisted)
         putBoolean("run_any_in_bg_allowed", runAnyInBgAllowed)
+        putBoolean("is_suspended", isSuspended)
         putStringArrayList("running_procs", ArrayList(runningProcesses))
         putStringArrayList("active_services", ArrayList(activeServices))
     }
 
     companion object {
-        fun fromBundle(bundle: Bundle?, pkgName: String): PkgRuntimeStatus {
+        fun fromBundle(bundle: Bundle?, pkgName: String, userId: Int = 0): PkgRuntimeStatus {
             if (bundle == null || !bundle.getBoolean("ok", false)) {
-                return PkgRuntimeStatus(packageName = pkgName, available = false)
+                return PkgRuntimeStatus(packageName = pkgName, userId = userId, available = false)
             }
             return PkgRuntimeStatus(
                 packageName = bundle.getString("pkg") ?: pkgName,
+                userId = bundle.getInt("user_id", userId),
                 available = true,
                 standbyBucket = bundle.getInt("standby_bucket", -1),
                 dozeWhitelisted = bundle.getBoolean("doze_whitelisted", false),
                 runAnyInBgAllowed = bundle.getBoolean("run_any_in_bg_allowed", true),
+                isSuspended = bundle.getBoolean("is_suspended", false),
                 runningProcesses = bundle.getStringArrayList("running_procs").orEmpty(),
                 activeServices = bundle.getStringArrayList("active_services").orEmpty(),
             )
@@ -350,6 +519,8 @@ data class PkgRuntimeStatus(
 object RulesCodec {
     const val PREF_NAME = "bgmanager_rules"
     const val KEY_RULES_SET = "pkg_subsystem_rules"
+    const val KEY_FREEZE_PKGS_SET = "auto_freeze_pkgs"
+    const val KEY_AUTO_FREEZE_DELAY_SEC = "auto_freeze_delay_sec"
     const val KEY_GLOBAL_GUARDELF = "global_disable_guardelf_kill"
     const val KEY_GLOBAL_BROADCAST = "global_disable_broadcast_restrict"
     const val KEY_GLOBAL_STRICT = "global_disable_hans_strict"
@@ -358,35 +529,60 @@ object RulesCodec {
     const val BRIDGE_URI = "content://settings/system"
     const val BRIDGE_METHOD = "bgmanager_query_snapshot"
     const val BRIDGE_RUNTIME_METHOD = "bgmanager_query_runtime"
+    const val BRIDGE_APPS_METHOD = "bgmanager_query_apps"
+    const val BRIDGE_PROCESSES_METHOD = "bgmanager_query_processes"
+    const val BRIDGE_SET_SUSPEND_METHOD = "bgmanager_set_suspend"
+    const val BRIDGE_LAUNCH_APP_METHOD = "bgmanager_launch_app"
 
-    fun encodeRules(rules: Map<String, Map<BgSubsystem, PolicyMode>>): Set<String> {
+    fun encodeRules(rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>>): Set<String> {
         val out = LinkedHashSet<String>()
-        for ((pkg, map) in rules) {
+        for ((target, map) in rules) {
             for ((sub, mode) in map) {
                 if (mode != PolicyMode.FOLLOW_SYSTEM) {
-                    out.add("$pkg|${sub.key}|${mode.code}")
+                    if (target.userId == 0) {
+                        out.add("${target.packageName}|${sub.key}|${mode.code}")
+                    } else {
+                        out.add("${target.userId}|${target.packageName}|${sub.key}|${mode.code}")
+                    }
                 }
             }
         }
         return out
     }
 
-    fun decodeRules(raw: Set<String>?): Map<String, Map<BgSubsystem, PolicyMode>> {
+    fun decodeRules(raw: Set<String>?): Map<AppUserKey, Map<BgSubsystem, PolicyMode>> {
         if (raw.isNullOrEmpty()) return emptyMap()
-        val result = LinkedHashMap<String, MutableMap<BgSubsystem, PolicyMode>>()
+        val result = LinkedHashMap<AppUserKey, MutableMap<BgSubsystem, PolicyMode>>()
         for (entry in raw) {
             val parts = entry.split('|')
-            if (parts.size != 3) continue
-            val pkg = parts[0]
-            val mode = PolicyMode.fromCode(parts[2].toIntOrNull() ?: 0)
+            val userId: Int
+            val pkg: String
+            val subKey: String
+            val modeCode: Int
+            when (parts.size) {
+                3 -> {
+                    userId = 0
+                    pkg = parts[0]
+                    subKey = parts[1]
+                    modeCode = parts[2].toIntOrNull() ?: 0
+                }
+                4 -> {
+                    userId = parts[0].toIntOrNull() ?: continue
+                    pkg = parts[1]
+                    subKey = parts[2]
+                    modeCode = parts[3].toIntOrNull() ?: 0
+                }
+                else -> continue
+            }
+            val mode = PolicyMode.fromCode(modeCode)
             if (pkg.isBlank() || mode == PolicyMode.FOLLOW_SYSTEM) continue
-            val targets = if (parts[1] == "cpulimit_net") {
+            val targets = if (subKey == "cpulimit_net") {
                 listOf(BgSubsystem.CPU_LIMIT, BgSubsystem.DOZE_NET, BgSubsystem.BROADCAST_RESTRICT)
             } else {
-                listOfNotNull(BgSubsystem.fromKey(parts[1]))
+                listOfNotNull(BgSubsystem.fromKey(subKey))
             }
             if (targets.isEmpty()) continue
-            val pkgMap = result.getOrPut(pkg) { mutableMapOf() }
+            val pkgMap = result.getOrPut(AppUserKey(pkg, userId)) { mutableMapOf() }
             targets.forEach { sub ->
                 pkgMap[sub] = if (sub != BgSubsystem.CPU_LIMIT && mode == PolicyMode.FORCE_RESTRICT_HBG) {
                     PolicyMode.FORCE_RESTRICT
@@ -398,10 +594,19 @@ object RulesCodec {
         return result
     }
 
+    fun encodeFreezePackages(targets: Set<AppUserKey>): Set<String> =
+        targets.mapTo(LinkedHashSet()) { it.storageKey }
+
+    fun decodeFreezePackages(raw: Set<String>?): Set<AppUserKey> {
+        if (raw.isNullOrEmpty()) return emptySet()
+        return raw.mapNotNullTo(LinkedHashSet()) { AppUserKey.parseStorageKey(it) }
+    }
+
     fun readGlobalFlags(prefs: SharedPreferences): GlobalRuleFlags = GlobalRuleFlags(
         disableGuardElfCpuKill = prefs.getBoolean(KEY_GLOBAL_GUARDELF, false),
         disableBroadcastQuotaGlobal = prefs.getBoolean(KEY_GLOBAL_BROADCAST, false),
         disableStrictModeFreeze = prefs.getBoolean(KEY_GLOBAL_STRICT, false),
         verboseLog = prefs.getBoolean(KEY_VERBOSE_LOG, false),
+        autoFreezeDelaySec = prefs.getInt(KEY_AUTO_FREEZE_DELAY_SEC, 10).coerceIn(3, 60),
     )
 }
