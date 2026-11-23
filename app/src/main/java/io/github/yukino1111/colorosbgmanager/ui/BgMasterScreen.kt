@@ -127,6 +127,7 @@ import io.github.yukino1111.colorosbgmanager.model.NativeSource
 import io.github.yukino1111.colorosbgmanager.model.NativeState
 import io.github.yukino1111.colorosbgmanager.model.PkgRuntimeStatus
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
+import io.github.yukino1111.colorosbgmanager.model.RulesCodec
 import io.github.yukino1111.colorosbgmanager.model.RuntimeEvent
 import io.github.yukino1111.colorosbgmanager.model.SystemSnapshot
 import java.text.SimpleDateFormat
@@ -676,13 +677,6 @@ private fun DashboardTab(
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(disableStrictModeFreeze = v) } },
                     )
                     HorizontalDivider()
-                    GlobalToggleRow(
-                        title = strings.globalVerboseTitle,
-                        subtitle = strings.globalVerboseSub,
-                        checked = state.globalFlags.verboseLog,
-                        onCheckedChange = { v -> onUpdateGlobals { it.copy(verboseLog = v) } },
-                    )
-                    HorizontalDivider()
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -695,18 +689,25 @@ private fun DashboardTab(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        val delayOptions = listOf(5, 10, 20, 30)
+                        val delayOptions = RulesCodec.AUTO_FREEZE_DELAY_OPTIONS
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                             delayOptions.forEachIndexed { idx, sec ->
                                 SegmentedButton(
                                     selected = state.globalFlags.autoFreezeDelaySec == sec,
                                     onClick = { onUpdateGlobals { it.copy(autoFreezeDelaySec = sec) } },
                                     shape = SegmentedButtonDefaults.itemShape(idx, delayOptions.size),
-                                    label = { Text("${sec}s") },
+                                    label = { Text(strings.autoFreezeDelayOptionLabel(sec)) },
                                 )
                             }
                         }
                     }
+                    HorizontalDivider()
+                    GlobalToggleRow(
+                        title = strings.globalVerboseTitle,
+                        subtitle = strings.globalVerboseSub,
+                        checked = state.globalFlags.verboseLog,
+                        onCheckedChange = { v -> onUpdateGlobals { it.copy(verboseLog = v) } },
+                    )
                 }
             }
         }

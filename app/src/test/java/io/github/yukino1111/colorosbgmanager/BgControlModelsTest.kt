@@ -201,6 +201,13 @@ class BgControlModelsTest {
         val freezeSet = setOf(AppUserKey("com.taobao.taobao", 0), AppUserKey("com.tencent.mm", 999))
         val decodedFreeze = RulesCodec.decodeFreezePackages(RulesCodec.encodeFreezePackages(freezeSet))
         assertEquals(freezeSet, decodedFreeze)
+
+        assertEquals(0, RulesCodec.normalizeAutoFreezeDelaySec(0))
+        assertEquals(0, RulesCodec.normalizeAutoFreezeDelaySec(-5))
+        assertEquals(60, RulesCodec.normalizeAutoFreezeDelaySec(10))
+        assertEquals(60, RulesCodec.normalizeAutoFreezeDelaySec(60))
+        assertEquals(300, RulesCodec.normalizeAutoFreezeDelaySec(300))
+        assertEquals(300, RulesCodec.normalizeAutoFreezeDelaySec(999))
     }
 
     @Test

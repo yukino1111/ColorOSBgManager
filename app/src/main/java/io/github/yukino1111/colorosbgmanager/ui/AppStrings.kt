@@ -137,6 +137,7 @@ data class AppStrings(
     val actionPinShortcut: String,
     val autoFreezeDelayTitle: String,
     val autoFreezeDelaySub: (Int) -> String,
+    val autoFreezeDelayOptionLabel: (Int) -> String,
     val toastSuspendOk: String,
     val toastUnsuspendOk: String,
     val toastActionFailed: String,
@@ -537,10 +538,24 @@ val ZhAppStrings = AppStrings(
     freezeStatusActive = "正常",
     actionFreezeNow = "立即冻结",
     actionUnfreezeNow = "立即解冻",
-    actionLaunchInApp = "插件内启动",
-    actionPinShortcut = "桌面快捷启动",
+    actionLaunchInApp = "启动",
+    actionPinShortcut = "添加桌面快捷方式",
     autoFreezeDelayTitle = "无后台自动冻结等待时间",
-    autoFreezeDelaySub = { sec -> "确认无活跃前台/后台服务后延迟 ${sec} 秒执行 suspend" },
+    autoFreezeDelaySub = { sec ->
+        when {
+            sec <= 0 -> "确认无活跃前台/后台服务后立刻执行 suspend"
+            sec % 60 == 0 -> "确认无活跃前台/后台服务后延迟 ${sec / 60} 分钟执行 suspend"
+            else -> "确认无活跃前台/后台服务后延迟 ${sec} 秒执行 suspend"
+        }
+    },
+    autoFreezeDelayOptionLabel = { sec ->
+        when (sec) {
+            0 -> "立刻"
+            60 -> "1min"
+            300 -> "5min"
+            else -> "${sec}s"
+        }
+    },
     toastSuspendOk = "已执行 pm suspend 冻结",
     toastUnsuspendOk = "已解冻应用",
     toastActionFailed = "操作失败，请检查 system_server 注入或受保护限制",
@@ -657,10 +672,24 @@ val EnAppStrings = AppStrings(
     freezeStatusActive = "Active",
     actionFreezeNow = "Suspend",
     actionUnfreezeNow = "Unsuspend",
-    actionLaunchInApp = "Launch Here",
-    actionPinShortcut = "Desktop Shortcut",
+    actionLaunchInApp = "Launch",
+    actionPinShortcut = "Add to Home",
     autoFreezeDelayTitle = "Auto-suspend Delay",
-    autoFreezeDelaySub = { sec -> "Wait ${sec}s after no active foreground/service before suspending" },
+    autoFreezeDelaySub = { sec ->
+        when {
+            sec <= 0 -> "Suspend immediately once no active foreground/service remains"
+            sec % 60 == 0 -> "Wait ${sec / 60} min after no active foreground/service before suspending"
+            else -> "Wait ${sec}s after no active foreground/service before suspending"
+        }
+    },
+    autoFreezeDelayOptionLabel = { sec ->
+        when (sec) {
+            0 -> "Instant"
+            60 -> "1min"
+            300 -> "5min"
+            else -> "${sec}s"
+        }
+    },
     toastSuspendOk = "Package suspended",
     toastUnsuspendOk = "Package unsuspended",
     toastActionFailed = "Action failed; check system_server injection",

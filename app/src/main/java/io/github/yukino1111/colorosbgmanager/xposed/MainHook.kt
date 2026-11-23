@@ -1409,7 +1409,11 @@ class MainHook : XposedModule() {
             }
         }
         pendingFreezeRunnables[key] = r
-        workerHandler.postDelayed(r, delayMs.coerceAtLeast(1000L))
+        if (delayMs <= 0L) {
+            workerHandler.post(r)
+        } else {
+            workerHandler.postDelayed(r, delayMs)
+        }
     }
 
     private fun isProtectedFromFreeze(pkg: String): Boolean =

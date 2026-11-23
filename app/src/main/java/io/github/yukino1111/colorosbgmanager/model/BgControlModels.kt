@@ -156,7 +156,7 @@ data class GlobalRuleFlags(
     val disableBroadcastQuotaGlobal: Boolean = false,
     val disableStrictModeFreeze: Boolean = false,
     val verboseLog: Boolean = false,
-    val autoFreezeDelaySec: Int = 10,
+    val autoFreezeDelaySec: Int = 60,
 )
 
 data class AppUserKey(
@@ -602,11 +602,19 @@ object RulesCodec {
         return raw.mapNotNullTo(LinkedHashSet()) { AppUserKey.parseStorageKey(it) }
     }
 
+    val AUTO_FREEZE_DELAY_OPTIONS = listOf(0, 60, 300)
+
+    fun normalizeAutoFreezeDelaySec(sec: Int): Int = when {
+        sec <= 0 -> 0
+        sec < 180 -> 60
+        else -> 300
+    }
+
     fun readGlobalFlags(prefs: SharedPreferences): GlobalRuleFlags = GlobalRuleFlags(
         disableGuardElfCpuKill = prefs.getBoolean(KEY_GLOBAL_GUARDELF, false),
         disableBroadcastQuotaGlobal = prefs.getBoolean(KEY_GLOBAL_BROADCAST, false),
         disableStrictModeFreeze = prefs.getBoolean(KEY_GLOBAL_STRICT, false),
         verboseLog = prefs.getBoolean(KEY_VERBOSE_LOG, false),
-        autoFreezeDelaySec = prefs.getInt(KEY_AUTO_FREEZE_DELAY_SEC, 10).coerceIn(3, 60),
+        autoFreezeDelaySec = normalizeAutoFreezeDelaySec(prefs.getInt(KEY_AUTO_FREEZE_DELAY_SEC, 60)),
     )
 }
