@@ -533,6 +533,7 @@ object RulesCodec {
     const val BRIDGE_PROCESSES_METHOD = "bgmanager_query_processes"
     const val BRIDGE_SET_SUSPEND_METHOD = "bgmanager_set_suspend"
     const val BRIDGE_LAUNCH_APP_METHOD = "bgmanager_launch_app"
+    const val ACTION_SYNC_SHORTCUT = "io.github.yukino1111.colorosbgmanager.ACTION_SYNC_SHORTCUT"
 
     fun encodeRules(rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>>): Set<String> {
         val out = LinkedHashSet<String>()

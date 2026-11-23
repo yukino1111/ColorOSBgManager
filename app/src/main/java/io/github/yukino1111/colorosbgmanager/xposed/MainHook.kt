@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.PowerManager
+import android.os.UserHandle
 import android.util.Log
 import io.github.yukino1111.colorosbgmanager.BuildConfig
 import io.github.yukino1111.colorosbgmanager.model.AppUserKey
@@ -1405,6 +1406,7 @@ class MainHook : XposedModule() {
             if (!activeFgOrSvc) {
                 if (MultiUserPackageHelper.setPackageSuspended(pkg, userId, true)) {
                     recordEvent(pkg, BgSubsystem.HANS_FREEZE, "auto_suspend", "no-bg", userId)
+                    notifyShortcutStateChanged(ctx, pkg, userId, true)
                 }
             }
         }
@@ -1444,6 +1446,7 @@ class MainHook : XposedModule() {
                 if (suspend) "pm-suspend" else "pm-unsuspend",
                 userId,
             )
+            notifyShortcutStateChanged(resolveSystemContext(), pkg, userId, suspend)
         }
         return Bundle().apply { putBoolean("ok", ok) }
     }
@@ -1459,8 +1462,23 @@ class MainHook : XposedModule() {
         val ok = MultiUserPackageHelper.launchPackageAsUser(ctx, pkg, userId)
         if (ok) {
             recordEvent(pkg, BgSubsystem.HANS_FREEZE, "unsuspend_launch", "launcher", userId)
+            notifyShortcutStateChanged(ctx, pkg, userId, false)
         }
         return Bundle().apply { putBoolean("ok", ok) }
+    }
+
+    private fun notifyShortcutStateChanged(ctx: Context?, pkg: String, userId: Int, suspended: Boolean) {
+        val targetCtx = ctx ?: resolveSystemContext() ?: return
+        runCatching {
+            val intent = Intent(RulesCodec.ACTION_SYNC_SHORTCUT).apply {
+                setClassName(BuildConfig.APPLICATION_ID, "${BuildConfig.APPLICATION_ID}.ShortcutSyncReceiver")
+                putExtra("pkg", pkg)
+                putExtra("user_id", userId)
+                putExtra("suspended", suspended)
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+            }
+            targetCtx.sendBroadcastAsUser(intent, UserHandle.getUserHandleForUid(0))
+        }
     }
 
     private fun scheduleBatteryDozeSync() {

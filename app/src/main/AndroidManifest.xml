@@ -41,5 +41,13 @@
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <receiver
+            android:name=".ShortcutSyncReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.github.yukino1111.colorosbgmanager.ACTION_SYNC_SHORTCUT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

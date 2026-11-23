@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import io.github.yukino1111.colorosbgmanager.data.DeviceSyncClient
+import io.github.yukino1111.colorosbgmanager.data.ShortcutHelper
 import io.github.yukino1111.colorosbgmanager.model.RulesCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +38,11 @@ class LaunchSuspendedActivity : Activity() {
                             putInt("user_id", userId)
                         },
                     )
-                    res?.getBoolean("ok", false) == true
+                    val ok = res?.getBoolean("ok", false) == true
+                    if (ok) {
+                        ShortcutHelper.syncPinnedShortcut(applicationContext, pkg, userId, isSuspended = false)
+                    }
+                    ok
                 }.getOrDefault(false)
             }
             if (!ok) {

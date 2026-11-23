@@ -1,28 +1,13 @@
 package io.github.yukino1111.colorosbgmanager.data
 
-import android.app.ActivityManager
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Rect
-import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.DrawableWrapper
-import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
 import android.os.UserHandle
-import androidx.core.graphics.createBitmap
-import androidx.core.graphics.drawable.toBitmap
-import androidx.core.graphics.scale
-import io.github.yukino1111.colorosbgmanager.LaunchSuspendedActivity
 import io.github.yukino1111.colorosbgmanager.model.AppProcessSummary
 import io.github.yukino1111.colorosbgmanager.model.AppUserKey
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
@@ -196,6 +181,9 @@ class DeviceSyncClient(private val context: Context) {
                 )
             }.getOrNull()
             val status = PkgRuntimeStatus.fromBundle(bundle, pkgName, userId)
+            if (status.available) {
+                ShortcutHelper.syncPinnedShortcut(context, pkgName, userId, status.isSuspended)
+            }
             val decoded = bundle?.getStringArrayList("events")
                 ?.mapNotNull { RuntimeEvent.decode(it) }
                 .orEmpty()
@@ -305,6 +293,9 @@ class DeviceSyncClient(private val context: Context) {
                     .sortedBy { it.label.lowercase() }
                 listOf(DeviceUserInfo(0, "Owner", false)) to entries
             }
+        }
+        withContext(Dispatchers.IO) {
+            ShortcutHelper.syncAllPinnedShortcuts(context, loadedApps)
         }
         _state.update { it.copy(users = loadedUsers, apps = loadedApps, loadingApps = false) }
     }
@@ -466,6 +457,9 @@ class DeviceSyncClient(private val context: Context) {
         }
         val strings = stringsFor(_state.value.language)
         if (ok) {
+            withContext(Dispatchers.IO) {
+                ShortcutHelper.syncPinnedShortcut(context, target.packageName, target.userId, suspend)
+            }
             loadPackageRuntime(target.packageName, target.userId)
             postMessage(if (suspend) strings.toastSuspendOk else strings.toastUnsuspendOk)
         } else {
@@ -485,7 +479,11 @@ class DeviceSyncClient(private val context: Context) {
                         putInt("user_id", target.userId)
                     },
                 )
-                res?.getBoolean("ok", false) == true
+                val launched = res?.getBoolean("ok", false) == true
+                if (launched) {
+                    ShortcutHelper.syncPinnedShortcut(context, target.packageName, target.userId, false)
+                }
+                launched
             }.getOrDefault(false)
         }
         if (ok) {
@@ -510,142 +508,8 @@ class DeviceSyncClient(private val context: Context) {
 
     fun pinLaunchShortcut(app: InstalledAppEntry) {
         val strings = stringsFor(_state.value.language)
-        val sm = context.getSystemService(ShortcutManager::class.java)
-        if (sm == null || !sm.isRequestPinShortcutSupported) {
-            postMessage(strings.toastShortcutUnsupported)
-            return
-        }
-        val token = getOrCreateShortcutToken(context)
-        val launchIntent = Intent(context, LaunchSuspendedActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            putExtra(LaunchSuspendedActivity.EXTRA_PKG, app.packageName)
-            putExtra(LaunchSuspendedActivity.EXTRA_USER_ID, app.userId)
-            putExtra(LaunchSuspendedActivity.EXTRA_TOKEN, token)
-        }
-        val shortcutLabel = if (app.userId == 0) app.label else "${app.label} (u${app.userId})"
-        val icon = buildShortcutIcon(app)
-        val shortcutId = "launch_${app.userId}_${app.packageName}"
-        val shortcut = ShortcutInfo.Builder(context, shortcutId)
-            .setShortLabel(shortcutLabel)
-            .setLongLabel(shortcutLabel)
-            .setIcon(icon)
-            .setIntent(launchIntent)
-            .build()
-        if (sm.pinnedShortcuts.any { it.id == shortcutId }) {
-            runCatching { sm.updateShortcuts(listOf(shortcut)) }
-        }
-        val pinned = runCatching { sm.requestPinShortcut(shortcut, null) }.getOrDefault(false)
+        val pinned = ShortcutHelper.pinShortcut(context, app)
         postMessage(if (pinned) strings.toastShortcutRequested else strings.toastShortcutUnsupported)
-    }
-
-    private fun buildShortcutIcon(app: InstalledAppEntry): Icon {
-        val pm = context.packageManager
-        var drawable = pm.getLaunchIntentForPackage(app.packageName)?.component?.let { cmp ->
-            runCatching { pm.getActivityIcon(cmp) }.getOrNull()
-        } ?: runCatching { pm.getApplicationIcon(app.packageName) }.getOrElse { app.icon }
-        while (drawable is DrawableWrapper) {
-            drawable = drawable.drawable ?: break
-        }
-        val am = context.getSystemService(ActivityManager::class.java)
-        val launcherSize = (am?.launcherLargeIconSize ?: 192).coerceIn(144, 288)
-        val adaptiveSize = (launcherSize * 1.5f).toInt().coerceIn(216, 432)
-        if (drawable is AdaptiveIconDrawable) {
-            val copy = drawable.constantState?.newDrawable()?.mutate() as? AdaptiveIconDrawable
-                ?: drawable
-            val bitmap = createBitmap(adaptiveSize, adaptiveSize)
-            val canvas = Canvas(bitmap)
-            copy.background?.let { bg ->
-                bg.setBounds(0, 0, adaptiveSize, adaptiveSize)
-                bg.draw(canvas)
-            }
-            copy.foreground?.let { fg ->
-                fg.setBounds(0, 0, adaptiveSize, adaptiveSize)
-                fg.draw(canvas)
-            }
-            return Icon.createWithAdaptiveBitmap(bitmap)
-        }
-        val rawBitmap = drawable.toBitmap(launcherSize, launcherSize, Bitmap.Config.ARGB_8888)
-        return adaptBitmapToShortcutIcon(rawBitmap, adaptiveSize)
-    }
-
-    private fun adaptBitmapToShortcutIcon(src: Bitmap, adaptiveSize: Int): Icon {
-        val w = src.width
-        val h = src.height
-        val cornersTransparent = listOf(
-            src.getPixel(0, 0),
-            src.getPixel(w - 1, 0),
-            src.getPixel(0, h - 1),
-            src.getPixel(w - 1, h - 1),
-        ).any { Color.alpha(it) < 32 }
-        if (!cornersTransparent) {
-            return Icon.createWithAdaptiveBitmap(src.scale(adaptiveSize, adaptiveSize))
-        }
-
-        var minX = w
-        var minY = h
-        var maxX = -1
-        var maxY = -1
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                if (Color.alpha(src.getPixel(x, y)) > 24) {
-                    if (x < minX) minX = x
-                    if (x > maxX) maxX = x
-                    if (y < minY) minY = y
-                    if (y > maxY) maxY = y
-                }
-            }
-        }
-        if (maxX < minX || maxY < minY) {
-            return Icon.createWithBitmap(src)
-        }
-
-        val cx = (minX + maxX) / 2f
-        val cy = (minY + maxY) / 2f
-        val rx = (maxX - minX) / 2f
-        val ry = (maxY - minY) / 2f
-        val rimColors = ArrayList<Int>(32)
-        for (i in 0 until 32) {
-            val angle = (i * Math.PI * 2.0) / 32.0
-            val cos = kotlin.math.cos(angle)
-            val sin = kotlin.math.sin(angle)
-            for (step in 95 downTo 70 step 5) {
-                val frac = step / 100f
-                val sx = (cx + rx * frac * cos).toInt().coerceIn(0, w - 1)
-                val sy = (cy + ry * frac * sin).toInt().coerceIn(0, h - 1)
-                val px = src.getPixel(sx, sy)
-                if (Color.alpha(px) > 200) {
-                    rimColors.add(px)
-                    break
-                }
-            }
-        }
-        val bleedColor = if (rimColors.isNotEmpty()) {
-            val r = rimColors.map { Color.red(it) }.sorted()[rimColors.size / 2]
-            val g = rimColors.map { Color.green(it) }.sorted()[rimColors.size / 2]
-            val b = rimColors.map { Color.blue(it) }.sorted()[rimColors.size / 2]
-            Color.rgb(r, g, b)
-        } else {
-            Color.WHITE
-        }
-
-        val out = createBitmap(adaptiveSize, adaptiveSize)
-        val canvas = Canvas(out)
-        canvas.drawColor(bleedColor)
-        val targetBox = (adaptiveSize * (2f / 3f)).toInt() + 2
-        val cropW = maxX - minX + 1
-        val cropH = maxY - minY + 1
-        val scale = targetBox.toFloat() / maxOf(cropW, cropH)
-        val dstW = (cropW * scale).toInt().coerceAtLeast(1)
-        val dstH = (cropH * scale).toInt().coerceAtLeast(1)
-        val left = (adaptiveSize - dstW) / 2
-        val top = (adaptiveSize - dstH) / 2
-        canvas.drawBitmap(
-            src,
-            Rect(minX, minY, maxX + 1, maxY + 1),
-            Rect(left, top, left + dstW, top + dstH),
-            null,
-        )
-        return Icon.createWithAdaptiveBitmap(out)
     }
 
     fun updateGlobalFlag(transform: (GlobalRuleFlags) -> GlobalRuleFlags) {
@@ -680,7 +544,7 @@ class DeviceSyncClient(private val context: Context) {
         private const val KEY_LANGUAGE = "app_language"
         private const val KEY_SHORTCUT_TOKEN = "shortcut_secret_token"
 
-        private fun getOrCreateShortcutToken(ctx: Context): String {
+        internal fun getOrCreateShortcutToken(ctx: Context): String {
             val prefs = ctx.getSharedPreferences(UI_PREF_NAME, Context.MODE_PRIVATE)
             prefs.getString(KEY_SHORTCUT_TOKEN, null)?.let { return it }
             val generated = UUID.randomUUID().toString()
