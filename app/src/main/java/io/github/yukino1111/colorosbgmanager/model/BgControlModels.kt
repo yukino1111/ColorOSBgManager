@@ -520,6 +520,7 @@ object RulesCodec {
     const val PREF_NAME = "bgmanager_rules"
     const val KEY_RULES_SET = "pkg_subsystem_rules"
     const val KEY_FREEZE_PKGS_SET = "auto_freeze_pkgs"
+    const val KEY_AUTO_UNFREEZE_DISABLED_SET = "auto_unfreeze_disabled_pkgs"
     const val KEY_AUTO_FREEZE_DELAY_SEC = "auto_freeze_delay_sec"
     const val KEY_GLOBAL_GUARDELF = "global_disable_guardelf_kill"
     const val KEY_GLOBAL_BROADCAST = "global_disable_broadcast_restrict"

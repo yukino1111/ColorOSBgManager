@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
 import android.os.Binder
@@ -46,6 +47,9 @@ class MainHook : XposedModule() {
 
     @Volatile
     private var autoFreezePkgs: Set<AppUserKey> = emptySet()
+
+    @Volatile
+    private var autoUnfreezeDisabledPkgs: Set<AppUserKey> = emptySet()
 
     @Volatile
     private var globalFlags: GlobalRuleFlags = GlobalRuleFlags()
@@ -164,8 +168,17 @@ class MainHook : XposedModule() {
         val raw = prefs.getStringSet(RulesCodec.KEY_RULES_SET, emptySet())
         rules = RulesCodec.decodeRules(raw)
         autoFreezePkgs = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_FREEZE_PKGS_SET, emptySet()))
+        autoUnfreezeDisabledPkgs = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_AUTO_UNFREEZE_DISABLED_SET, emptySet()))
         globalFlags = RulesCodec.readGlobalFlags(prefs)
-        logMsg(Log.INFO, "Rules refreshed: ${rules.size} targets, freeze=${autoFreezePkgs.size}, globals=$globalFlags")
+        logMsg(
+            Log.INFO,
+            "Rules refreshed: ${rules.size} targets, freeze=${autoFreezePkgs.size}, unfreezeOff=${autoUnfreezeDisabledPkgs.size}, globals=$globalFlags",
+        )
+        for (key in pendingFreezeRunnables.keys) {
+            if (key !in autoFreezePkgs) {
+                pendingFreezeRunnables.remove(key)?.let { workerHandler.removeCallbacks(it) }
+            }
+        }
         if (bootCompleted) {
             scheduleBatteryDozeSync()
         }
@@ -1363,7 +1376,63 @@ class MainHook : XposedModule() {
                     }
                 }
         }.onFailure { logMsg(Log.WARN, "Hook ProcessList.removeProcessLocked skipped", it) }
+
+        installActivityLaunchUnfreezeHooks(cl)
     }
+
+    private fun installActivityLaunchUnfreezeHooks(cl: ClassLoader) {
+        runCatching {
+            val interceptorClass = cl.loadClass("com.android.server.wm.ActivityStartInterceptor")
+            val aInfoField = interceptorClass.getDeclaredField("mAInfo").apply { isAccessible = true }
+            val rInfoField = interceptorClass.getDeclaredField("mRInfo").apply { isAccessible = true }
+            val userIdField = interceptorClass.getDeclaredField("mUserId").apply { isAccessible = true }
+            val serviceField = interceptorClass.getDeclaredField("mService").apply { isAccessible = true }
+            val method = interceptorClass.getDeclaredMethod("interceptSuspendedPackageIfNeeded")
+            hook(method).intercept { chain ->
+                val interceptor = chain.thisObject ?: return@intercept chain.proceed()
+                val aInfo = aInfoField.get(interceptor) as? ActivityInfo
+                val appInfo = aInfo?.applicationInfo
+                if (appInfo != null && (appInfo.flags and ApplicationInfo.FLAG_SUSPENDED) != 0) {
+                    val pkg = appInfo.packageName
+                    val userId = userIdField.getInt(interceptor)
+                    val key = AppUserKey(pkg, userId)
+                    if (key !in autoUnfreezeDisabledPkgs &&
+                        (key in autoFreezePkgs || isSuspendedBySystem(serviceField, interceptor, pkg, userId))
+                    ) {
+                        pendingFreezeRunnables.remove(key)?.let { workerHandler.removeCallbacks(it) }
+                        if (MultiUserPackageHelper.setPackageSuspended(pkg, userId, false)) {
+                            appInfo.flags = appInfo.flags and ApplicationInfo.FLAG_SUSPENDED.inv()
+                            (rInfoField.get(interceptor) as? ResolveInfo)?.activityInfo?.applicationInfo?.let {
+                                it.flags = it.flags and ApplicationInfo.FLAG_SUSPENDED.inv()
+                            }
+                            recordEvent(pkg, BgSubsystem.HANS_FREEZE, "unsuspend_launch", "activity", userId)
+                            notifyShortcutStateChanged(systemContext, pkg, userId, false)
+                            return@intercept false
+                        }
+                    }
+                }
+                chain.proceed()
+            }
+        }.onFailure { log(Log.ERROR, TAG, "Hook ActivityStartInterceptor failed", it) }
+    }
+
+    private fun isSuspendedBySystem(
+        serviceField: Field,
+        interceptor: Any,
+        pkg: String,
+        userId: Int,
+    ): Boolean = runCatching {
+        val service = serviceField.get(interceptor) ?: return false
+        val pmi = service.javaClass.getMethod("getPackageManagerInternalLocked").invoke(service) ?: return false
+        val getSuspending = pmi.javaClass.getMethod(
+            "getSuspendingPackage",
+            String::class.java,
+            Int::class.javaPrimitiveType,
+        )
+        val suspender = getSuspending.invoke(pmi, pkg, userId) ?: return false
+        val suspenderPkg = suspender.javaClass.getField("packageName").get(suspender) as? String
+        suspenderPkg == "android"
+    }.getOrDefault(false)
 
     private fun registerScreenOffReceiver() {
         val ctx = resolveSystemContext() ?: return
@@ -1468,16 +1537,19 @@ class MainHook : XposedModule() {
     }
 
     private fun notifyShortcutStateChanged(ctx: Context?, pkg: String, userId: Int, suspended: Boolean) {
-        val targetCtx = ctx ?: resolveSystemContext() ?: return
-        runCatching {
-            val intent = Intent(RulesCodec.ACTION_SYNC_SHORTCUT).apply {
-                setClassName(BuildConfig.APPLICATION_ID, "${BuildConfig.APPLICATION_ID}.ShortcutSyncReceiver")
-                putExtra("pkg", pkg)
-                putExtra("user_id", userId)
-                putExtra("suspended", suspended)
-                addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        // Never sendBroadcastAsUser synchronously from hooks holding WindowManagerGlobalLock (deadlocks with AMS).
+        workerHandler.post {
+            val targetCtx = ctx ?: resolveSystemContext() ?: return@post
+            runCatching {
+                val intent = Intent(RulesCodec.ACTION_SYNC_SHORTCUT).apply {
+                    setClassName(BuildConfig.APPLICATION_ID, "${BuildConfig.APPLICATION_ID}.ShortcutSyncReceiver")
+                    putExtra("pkg", pkg)
+                    putExtra("user_id", userId)
+                    putExtra("suspended", suspended)
+                    addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                }
+                targetCtx.sendBroadcastAsUser(intent, UserHandle.getUserHandleForUid(0))
             }
-            targetCtx.sendBroadcastAsUser(intent, UserHandle.getUserHandleForUid(0))
         }
     }
 

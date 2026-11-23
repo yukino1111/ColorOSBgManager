@@ -48,7 +48,10 @@ class MainActivity : ComponentActivity() {
                     onLoadRootProcesses = { showSpinner ->
                         lifecycleScope.launch { syncClient.loadRootProcesses(showSpinner) }
                     },
-                    onSetAutoFreeze = syncClient::setAutoFreeze,
+                    onSetAutoFreeze = { target, enabled ->
+                        lifecycleScope.launch { syncClient.setAutoFreeze(target, enabled) }
+                    },
+                    onSetAutoUnfreeze = syncClient::setAutoUnfreeze,
                     onSetPackageSuspended = { target, suspend ->
                         lifecycleScope.launch { syncClient.setPackageSuspended(target, suspend) }
                     },

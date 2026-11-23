@@ -55,6 +55,7 @@ data class BgMasterUiState(
     val users: List<DeviceUserInfo> = listOf(DeviceUserInfo(0, "Owner", false)),
     val rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>> = emptyMap(),
     val autoFreezePkgs: Set<AppUserKey> = emptySet(),
+    val autoUnfreezeDisabledPkgs: Set<AppUserKey> = emptySet(),
     val globalFlags: GlobalRuleFlags = GlobalRuleFlags(),
     val apps: List<InstalledAppEntry> = emptyList(),
     val loadingApps: Boolean = true,
@@ -95,6 +96,7 @@ class DeviceSyncClient(private val context: Context) {
             remotePrefs = prefs
             val rules = RulesCodec.decodeRules(prefs.getStringSet(RulesCodec.KEY_RULES_SET, emptySet()))
             val freezeSet = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_FREEZE_PKGS_SET, emptySet()))
+            val unfreezeDisabledSet = RulesCodec.decodeFreezePackages(prefs.getStringSet(RulesCodec.KEY_AUTO_UNFREEZE_DISABLED_SET, emptySet()))
             val globals = RulesCodec.readGlobalFlags(prefs)
             _state.update {
                 it.copy(
@@ -102,6 +104,7 @@ class DeviceSyncClient(private val context: Context) {
                     xposedApiVersion = service.apiVersion,
                     rules = rules,
                     autoFreezePkgs = freezeSet,
+                    autoUnfreezeDisabledPkgs = unfreezeDisabledSet,
                     globalFlags = globals,
                 )
             }
@@ -427,7 +430,7 @@ class DeviceSyncClient(private val context: Context) {
         _state.update { it.copy(rules = updated) }
     }
 
-    fun setAutoFreeze(target: AppUserKey, enabled: Boolean) {
+    suspend fun setAutoFreeze(target: AppUserKey, enabled: Boolean) {
         val prefs = remotePrefs ?: run {
             postMessage(stringsFor(_state.value.language).toastNeedLposedSetting)
             return
@@ -437,6 +440,19 @@ class DeviceSyncClient(private val context: Context) {
         }
         prefs.edit().putStringSet(RulesCodec.KEY_FREEZE_PKGS_SET, RulesCodec.encodeFreezePackages(updated)).apply()
         _state.update { it.copy(autoFreezePkgs = updated) }
+        setPackageSuspended(target, enabled)
+    }
+
+    fun setAutoUnfreeze(target: AppUserKey, enabled: Boolean) {
+        val prefs = remotePrefs ?: run {
+            postMessage(stringsFor(_state.value.language).toastNeedLposedSetting)
+            return
+        }
+        val updated = _state.value.autoUnfreezeDisabledPkgs.toMutableSet().apply {
+            if (enabled) remove(target) else add(target)
+        }
+        prefs.edit().putStringSet(RulesCodec.KEY_AUTO_UNFREEZE_DISABLED_SET, RulesCodec.encodeFreezePackages(updated)).apply()
+        _state.update { it.copy(autoUnfreezeDisabledPkgs = updated) }
     }
 
     suspend fun setPackageSuspended(target: AppUserKey, suspend: Boolean) {

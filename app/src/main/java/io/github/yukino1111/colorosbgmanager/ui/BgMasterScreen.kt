@@ -3,10 +3,14 @@ package io.github.yukino1111.colorosbgmanager.ui
 import android.graphics.drawable.Drawable
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -42,6 +46,7 @@ import androidx.compose.material.icons.rounded.AcUnit
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -74,6 +79,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -92,6 +98,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -168,6 +175,7 @@ fun BgMasterScreen(
     onLoadProcesses: (Boolean) -> Unit,
     onLoadRootProcesses: (Boolean) -> Unit,
     onSetAutoFreeze: (AppUserKey, Boolean) -> Unit,
+    onSetAutoUnfreeze: (AppUserKey, Boolean) -> Unit,
     onSetPackageSuspended: (AppUserKey, Boolean) -> Unit,
     onLaunchApp: (AppUserKey) -> Unit,
     onPinShortcut: (InstalledAppEntry) -> Unit,
@@ -186,6 +194,7 @@ fun BgMasterScreen(
             onLoadProcesses = onLoadProcesses,
             onLoadRootProcesses = onLoadRootProcesses,
             onSetAutoFreeze = onSetAutoFreeze,
+            onSetAutoUnfreeze = onSetAutoUnfreeze,
             onSetPackageSuspended = onSetPackageSuspended,
             onLaunchApp = onLaunchApp,
             onPinShortcut = onPinShortcut,
@@ -207,6 +216,7 @@ private fun BgMasterScreenContent(
     onLoadProcesses: (Boolean) -> Unit,
     onLoadRootProcesses: (Boolean) -> Unit,
     onSetAutoFreeze: (AppUserKey, Boolean) -> Unit,
+    onSetAutoUnfreeze: (AppUserKey, Boolean) -> Unit,
     onSetPackageSuspended: (AppUserKey, Boolean) -> Unit,
     onLaunchApp: (AppUserKey) -> Unit,
     onPinShortcut: (InstalledAppEntry) -> Unit,
@@ -220,6 +230,7 @@ private fun BgMasterScreenContent(
     var appCategory by remember { mutableStateOf(AppCategory.USER) }
     var policyScopeFilter by remember { mutableStateOf(PolicyScopeFilter.ALL) }
     var selectedSubsystems by remember { mutableStateOf(BgSubsystem.entries.toSet()) }
+    var autoFreezeOnly by remember { mutableStateOf(false) }
 
     var procSearchQuery by remember { mutableStateOf("") }
     var procCategory by remember { mutableStateOf(ProcessCategoryFilter.USER) }
@@ -357,6 +368,7 @@ private fun BgMasterScreenContent(
                                         listState = overviewListState,
                                         onJumpToSubsystem = { sub ->
                                             selectedSubsystems = setOf(sub)
+                                            autoFreezeOnly = false
                                             selectedTab = 1
                                         },
                                         onOpenNativeLists = { pushRoute(ScreenRoute.NativeLists) },
@@ -374,6 +386,8 @@ private fun BgMasterScreenContent(
                                         onScopeFilterChange = { policyScopeFilter = it },
                                         selectedSubsystems = selectedSubsystems,
                                         onSubsystemsChange = { selectedSubsystems = it },
+                                        autoFreezeOnly = autoFreezeOnly,
+                                        onAutoFreezeOnlyChange = { autoFreezeOnly = it },
                                         onSetRule = onSetRule,
                                         onOpenDetail = { target -> pushRoute(ScreenRoute.AppDetail(target)) },
                                     )
@@ -419,6 +433,7 @@ private fun BgMasterScreenContent(
                         onSetRule = { sub, mode -> onSetRule(currentRoute.target, sub, mode) },
                         onSetAll = { mode -> onSetAllForPackage(currentRoute.target, mode) },
                         onSetAutoFreeze = { enabled -> onSetAutoFreeze(currentRoute.target, enabled) },
+                        onSetAutoUnfreeze = { enabled -> onSetAutoUnfreeze(currentRoute.target, enabled) },
                         onSetPackageSuspended = { suspend -> onSetPackageSuspended(currentRoute.target, suspend) },
                         onLaunchApp = { onLaunchApp(currentRoute.target) },
                         onPinShortcut = { appEntry?.let(onPinShortcut) },
@@ -797,6 +812,8 @@ private fun AppsTab(
     onScopeFilterChange: (PolicyScopeFilter) -> Unit,
     selectedSubsystems: Set<BgSubsystem>,
     onSubsystemsChange: (Set<BgSubsystem>) -> Unit,
+    autoFreezeOnly: Boolean,
+    onAutoFreezeOnlyChange: (Boolean) -> Unit,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
     onOpenDetail: (AppUserKey) -> Unit,
 ) {
@@ -814,6 +831,7 @@ private fun AppsTab(
         appCategory,
         policyScopeFilter,
         selectedSubsystems,
+        autoFreezeOnly,
     ) {
         val q = searchQuery.trim().lowercase()
         val overridden = ArrayList<InstalledAppEntry>()
@@ -831,12 +849,13 @@ private fun AppsTab(
                 val queryOk = q.isEmpty() ||
                     app.label.lowercase().contains(q) ||
                     app.packageName.lowercase().contains(q)
-                catOk && queryOk
+                val freezeOk = !autoFreezeOnly || app.key in state.autoFreezePkgs
+                catOk && queryOk && freezeOk
             }
             .sortedWith(compareBy<InstalledAppEntry> { it.label.lowercase() }.thenBy { it.userId })
             .forEach { app ->
                 val isOverridden = hasOverrideInDimensions(state.rules, app.key, selectedSubsystems) ||
-                    (allSubsystemsSelected && app.key in state.autoFreezePkgs)
+                    ((allSubsystemsSelected || autoFreezeOnly) && app.key in state.autoFreezePkgs)
                 val isNativeHit = isManagedBySystemInDimensions(state.snapshot, app.packageName, selectedSubsystems)
                 val passesScope = when (policyScopeFilter) {
                     PolicyScopeFilter.ALL -> true
@@ -905,6 +924,23 @@ private fun AppsTab(
                         )
                     },
                     label = { Text(strings.allDimensions) },
+                )
+                FilterChip(
+                    selected = autoFreezeOnly,
+                    onClick = { onAutoFreezeOnlyChange(!autoFreezeOnly) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.AcUnit,
+                            contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize),
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    ),
+                    label = { Text(strings.autoFreezeFilterTag(state.autoFreezePkgs.size)) },
                 )
                 BgSubsystem.entries.forEach { sub ->
                     val checked = sub in selectedSubsystems
@@ -1353,6 +1389,7 @@ private fun AppDetailPage(
     onSetRule: (BgSubsystem, PolicyMode) -> Unit,
     onSetAll: (PolicyMode) -> Unit,
     onSetAutoFreeze: (Boolean) -> Unit,
+    onSetAutoUnfreeze: (Boolean) -> Unit,
     onSetPackageSuspended: (Boolean) -> Unit,
     onLaunchApp: () -> Unit,
     onPinShortcut: () -> Unit,
@@ -1368,6 +1405,7 @@ private fun AppDetailPage(
     }
     val isSuspended = runtime?.isSuspended ?: appEntry?.isSuspended ?: false
     val isAutoFreeze = target in state.autoFreezePkgs
+    val isAutoUnfreeze = target !in state.autoUnfreezeDisabledPkgs
 
     LaunchedEffect(target, state.snapshot.serverInjected) {
         if (state.snapshot.serverInjected) {
@@ -1464,8 +1502,10 @@ private fun AppDetailPage(
                     FreezeControlCard(
                         isSuspended = isSuspended,
                         isAutoFreeze = isAutoFreeze,
+                        isAutoUnfreeze = isAutoUnfreeze,
                         canPinShortcut = appEntry != null,
                         onSetAutoFreeze = onSetAutoFreeze,
+                        onSetAutoUnfreeze = onSetAutoUnfreeze,
                         onSetSuspended = onSetPackageSuspended,
                         onLaunchApp = onLaunchApp,
                         onPinShortcut = onPinShortcut,
@@ -1570,16 +1610,47 @@ private fun AppDetailPage(
 private fun FreezeControlCard(
     isSuspended: Boolean,
     isAutoFreeze: Boolean,
+    isAutoUnfreeze: Boolean,
     canPinShortcut: Boolean,
     onSetAutoFreeze: (Boolean) -> Unit,
+    onSetAutoUnfreeze: (Boolean) -> Unit,
     onSetSuspended: (Boolean) -> Unit,
     onLaunchApp: () -> Unit,
     onPinShortcut: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val motionScheme = MaterialTheme.motionScheme
+    val subContainerColor by animateColorAsState(
+        targetValue = if (isAutoUnfreeze) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        animationSpec = motionScheme.defaultEffectsSpec(),
+        label = "autoUnfreezeContainer",
+    )
+    val subIconBgColor by animateColorAsState(
+        targetValue = if (isAutoUnfreeze) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+        animationSpec = motionScheme.defaultEffectsSpec(),
+        label = "autoUnfreezeIconBg",
+    )
+    val subIconTint by animateColorAsState(
+        targetValue = if (isAutoUnfreeze) {
+            MaterialTheme.colorScheme.onSecondaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        animationSpec = motionScheme.defaultEffectsSpec(),
+        label = "autoUnfreezeIconTint",
+    )
+
     ElevatedCard(
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        modifier = Modifier.animateContentSize(animationSpec = motionScheme.defaultSpatialSpec()),
     ) {
         Column(
             modifier = Modifier
@@ -1609,12 +1680,89 @@ private fun FreezeControlCard(
                 )
             }
 
-            GlobalToggleRow(
-                title = strings.autoFreezeSwitchTitle,
-                subtitle = strings.autoFreezeSwitchSub,
-                checked = isAutoFreeze,
-                onCheckedChange = onSetAutoFreeze,
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                GlobalToggleRow(
+                    title = strings.autoFreezeSwitchTitle,
+                    subtitle = strings.autoFreezeSwitchSub,
+                    checked = isAutoFreeze,
+                    onCheckedChange = onSetAutoFreeze,
+                )
+                AnimatedVisibility(
+                    visible = isAutoFreeze,
+                    enter = expandVertically(
+                        animationSpec = motionScheme.defaultSpatialSpec(),
+                        expandFrom = Alignment.Top,
+                    ) + fadeIn(animationSpec = motionScheme.defaultEffectsSpec()),
+                    exit = shrinkVertically(
+                        animationSpec = motionScheme.fastSpatialSpec(),
+                        shrinkTowards = Alignment.Top,
+                    ) + fadeOut(animationSpec = motionScheme.fastEffectsSpec()),
+                ) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = subContainerColor,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 4.dp)
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { onSetAutoUnfreeze(!isAutoUnfreeze) },
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = subIconBgColor,
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Bolt,
+                                        contentDescription = null,
+                                        tint = subIconTint,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    strings.autoUnfreezeSwitchTitle,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    strings.autoUnfreezeSwitchSub,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(
+                                checked = isAutoUnfreeze,
+                                onCheckedChange = onSetAutoUnfreeze,
+                                thumbContent = if (isAutoUnfreeze) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
+                }
+            }
 
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
