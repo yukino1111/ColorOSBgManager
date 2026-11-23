@@ -116,8 +116,13 @@ import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
 import io.github.yukino1111.colorosbgmanager.model.NativeListKind
 import io.github.yukino1111.colorosbgmanager.model.NativeSource
 import io.github.yukino1111.colorosbgmanager.model.NativeState
+import io.github.yukino1111.colorosbgmanager.model.PkgRuntimeStatus
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
+import io.github.yukino1111.colorosbgmanager.model.RuntimeEvent
 import io.github.yukino1111.colorosbgmanager.model.SystemSnapshot
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class AppCategory(val label: String) {
     USER("用户"),
@@ -148,6 +153,7 @@ fun BgMasterScreen(
     onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
     onSetAllForPackage: (String, PolicyMode) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
+    onLoadPackageRuntime: (String) -> Unit,
     onDismissMessage: () -> Unit,
 ) {
     val strings = stringsFor(state.language)
@@ -159,6 +165,7 @@ fun BgMasterScreen(
             onSetRule = onSetRule,
             onSetAllForPackage = onSetAllForPackage,
             onUpdateGlobals = onUpdateGlobals,
+            onLoadPackageRuntime = onLoadPackageRuntime,
             onDismissMessage = onDismissMessage,
         )
     }
@@ -173,6 +180,7 @@ private fun BgMasterScreenContent(
     onSetRule: (String, BgSubsystem, PolicyMode) -> Unit,
     onSetAllForPackage: (String, PolicyMode) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
+    onLoadPackageRuntime: (String) -> Unit,
     onDismissMessage: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
@@ -320,6 +328,7 @@ private fun BgMasterScreenContent(
                         state = state,
                         snackbarHostState = snackbarHostState,
                         onBack = { route = ScreenRoute.Home },
+                        onLoadRuntime = { onLoadPackageRuntime(currentRoute.packageName) },
                         onSetRule = { sub, mode -> onSetRule(currentRoute.packageName, sub, mode) },
                         onSetAll = { mode -> onSetAllForPackage(currentRoute.packageName, mode) },
                     )
@@ -581,6 +590,23 @@ private fun DashboardTab(
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(verboseLog = v) } },
                     )
                 }
+            }
+        }
+
+        if (state.snapshot.serverInjected) {
+            item {
+                Text(
+                    strings.sectionRecentEvents,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            item {
+                RuntimeEventsCard(
+                    events = state.recentEvents.take(12),
+                    showPackageName = true,
+                )
             }
         }
     }
@@ -1092,11 +1118,20 @@ private fun AppDetailPage(
     state: BgMasterUiState,
     snackbarHostState: SnackbarHostState,
     onBack: () -> Unit,
+    onLoadRuntime: () -> Unit,
     onSetRule: (BgSubsystem, PolicyMode) -> Unit,
     onSetAll: (PolicyMode) -> Unit,
 ) {
     val strings = LocalAppStrings.current
     val pkgRules = state.rules[packageName].orEmpty()
+    val runtime = state.detailRuntime?.takeIf { it.packageName == packageName }
+    val appEvents = if (state.detailRuntime?.packageName == packageName) state.detailEvents else emptyList()
+
+    LaunchedEffect(packageName, state.snapshot.serverInjected) {
+        if (state.snapshot.serverInjected) {
+            onLoadRuntime()
+        }
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -1129,6 +1164,20 @@ private fun AppDetailPage(
                         }
                     }
                 },
+                actions = {
+                    if (state.snapshot.serverInjected) {
+                        IconButton(onClick = onLoadRuntime, enabled = !state.loadingDetailRuntime) {
+                            if (state.loadingDetailRuntime) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
+                            }
+                        }
+                    }
+                },
             )
         },
     ) { padding ->
@@ -1153,6 +1202,12 @@ private fun AppDetailPage(
                     ) {
                         Text(strings.restoreDefault)
                     }
+                }
+            }
+
+            if (state.snapshot.serverInjected) {
+                item {
+                    RuntimeStatusCard(runtime = runtime)
                 }
             }
 
@@ -1224,6 +1279,139 @@ private fun AppDetailPage(
                                 )
                             }
                         }
+                    }
+                }
+            }
+
+            if (state.snapshot.serverInjected) {
+                item {
+                    Text(
+                        strings.sectionAppEvents,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                item {
+                    RuntimeEventsCard(
+                        events = appEvents.take(25),
+                        showPackageName = false,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RuntimeStatusCard(
+    runtime: PkgRuntimeStatus?,
+) {
+    val strings = LocalAppStrings.current
+    ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                strings.sectionRuntimeStatus,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            if (runtime == null || !runtime.available) {
+                Text(
+                    strings.noRecentEvents,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    StatusPill(
+                        text = "${strings.runtimeDozeWl}: ${if (runtime.dozeWhitelisted) strings.runtimeWhitelisted else strings.runtimeNotWhitelisted}",
+                        active = runtime.dozeWhitelisted,
+                    )
+                    StatusPill(
+                        text = "${strings.runtimeStandbyBucket}: ${strings.formatStandbyBucket(runtime.standbyBucket)}",
+                        active = runtime.standbyBucket in 0..10,
+                    )
+                }
+                Text(
+                    text = "${strings.runtimeRunningProcs}: " + if (runtime.runningProcesses.isEmpty()) {
+                        strings.runtimeNotRunning
+                    } else {
+                        runtime.runningProcesses.joinToString(", ")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RuntimeEventsCard(
+    events: List<RuntimeEvent>,
+    showPackageName: Boolean,
+) {
+    val strings = LocalAppStrings.current
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (events.isEmpty()) {
+                Text(
+                    strings.noRecentEvents,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                events.forEachIndexed { idx, ev ->
+                    if (idx > 0) HorizontalDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            val title = if (showPackageName) {
+                                "${ev.pkgName} · ${strings.formatRuntimeAction(ev.action)}"
+                            } else {
+                                strings.formatRuntimeAction(ev.action)
+                            }
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val subText = BgSubsystem.fromKey(ev.subsystemKey)?.let { strings.subsystemShort(it) } ?: ev.subsystemKey
+                            val detailSuffix = if (ev.detail.isNotBlank()) " · ${ev.detail}" else ""
+                            Text(
+                                text = "$subText$detailSuffix",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = timeFmt.format(Date(ev.timestampMs)),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

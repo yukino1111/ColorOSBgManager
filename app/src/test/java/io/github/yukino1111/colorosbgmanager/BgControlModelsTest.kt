@@ -7,6 +7,7 @@ import io.github.yukino1111.colorosbgmanager.model.NativeSource
 import io.github.yukino1111.colorosbgmanager.model.NativeState
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
 import io.github.yukino1111.colorosbgmanager.model.RulesCodec
+import io.github.yukino1111.colorosbgmanager.model.RuntimeEvent
 import io.github.yukino1111.colorosbgmanager.model.SystemSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -130,5 +131,22 @@ class BgControlModelsTest {
         assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.trim.cloud", BgSubsystem.ATHENA_RECENT))
         assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.cpu.white", BgSubsystem.CPU_LIMIT))
         assertEquals(NativeState.NEUTRAL, disabledSnapshot.nativeStateFor("com.cpu.viphbg", BgSubsystem.CPU_LIMIT))
+    }
+
+    @Test
+    fun runtimeEvent_encodeAndDecode_roundTripsCleanly() {
+        val ev = RuntimeEvent(
+            timestampMs = 1795426000123L,
+            pkgName = "oolong.client",
+            subsystemKey = BgSubsystem.ATHENA_RECENT.key,
+            action = "skip_nirvana",
+            detail = "cch-empty\tcheck",
+        )
+        val decoded = RuntimeEvent.decode(ev.encode())
+        assertEquals(1795426000123L, decoded?.timestampMs)
+        assertEquals("oolong.client", decoded?.pkgName)
+        assertEquals("athena", decoded?.subsystemKey)
+        assertEquals("skip_nirvana", decoded?.action)
+        assertEquals("cch-empty check", decoded?.detail)
     }
 }

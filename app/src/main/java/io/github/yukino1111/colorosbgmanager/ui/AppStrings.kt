@@ -94,6 +94,16 @@ data class AppStrings(
     val toastNotInjected: String,
     val toastNeedLposedRule: String,
     val toastNeedLposedSetting: String,
+    val sectionRecentEvents: String,
+    val noRecentEvents: String,
+    val sectionRuntimeStatus: String,
+    val runtimeDozeWl: String,
+    val runtimeStandbyBucket: String,
+    val runtimeRunningProcs: String,
+    val runtimeWhitelisted: String,
+    val runtimeNotWhitelisted: String,
+    val runtimeNotRunning: String,
+    val sectionAppEvents: String,
 ) {
     fun subsystemTitle(sub: BgSubsystem): String = when (language) {
         AppLanguage.ZH -> sub.title
@@ -293,6 +303,55 @@ data class AppStrings(
             PolicyScopeFilter.MANAGED -> "Managed"
         }
     }
+
+    fun formatRuntimeAction(action: String): String = when (language) {
+        AppLanguage.ZH -> when (action) {
+            "skip_nirvana" -> "拦截 Nirvana 清理"
+            "skip_okill" -> "拦截系统杀进程"
+            "skip_athena_clean" -> "拦截 Athena 清理"
+            "skip_athena_forcestop" -> "拦截 Athena 强停"
+            "skip_remove_task" -> "保留划卡后台"
+            "remove_task_forcestop" -> "划卡强停应用"
+            "prevent_start_proc" -> "拦截后台拉起"
+            "block_service_restart" -> "阻断服务自重启"
+            "prevent_service" -> "拦截启动服务"
+            "prevent_bind" -> "拦截绑定服务"
+            "prevent_receiver" -> "拦截广播拉起"
+            "prevent_provider" -> "拦截 Provider 拉起"
+            "skip_oguard" -> "拦截 OGuard 省电杀"
+            "sync_doze_add" -> "同步加入 Doze 白名单"
+            "sync_doze_remove" -> "同步移出 Doze 白名单"
+            else -> action
+        }
+        AppLanguage.EN -> when (action) {
+            "skip_nirvana" -> "Skipped Nirvana kill"
+            "skip_okill" -> "Skipped system kill"
+            "skip_athena_clean" -> "Skipped Athena clean"
+            "skip_athena_forcestop" -> "Skipped Athena force-stop"
+            "skip_remove_task" -> "Kept on swipe"
+            "remove_task_forcestop" -> "Force-stopped on swipe"
+            "prevent_start_proc" -> "Blocked BG process start"
+            "block_service_restart" -> "Blocked service restart"
+            "prevent_service" -> "Blocked startService"
+            "prevent_bind" -> "Blocked bindService"
+            "prevent_receiver" -> "Blocked receiver"
+            "prevent_provider" -> "Blocked provider"
+            "skip_oguard" -> "Skipped OGuard kill"
+            "sync_doze_add" -> "Added to Doze whitelist"
+            "sync_doze_remove" -> "Removed from Doze whitelist"
+            else -> action
+        }
+    }
+
+    fun formatStandbyBucket(bucket: Int): String = when (bucket) {
+        5 -> if (language == AppLanguage.ZH) "5 (豁免)" else "5 (Exempted)"
+        10 -> if (language == AppLanguage.ZH) "10 (活跃)" else "10 (Active)"
+        20 -> if (language == AppLanguage.ZH) "20 (工作集)" else "20 (Working)"
+        30 -> if (language == AppLanguage.ZH) "30 (常用)" else "30 (Frequent)"
+        40 -> if (language == AppLanguage.ZH) "40 (极少)" else "40 (Rare)"
+        45 -> if (language == AppLanguage.ZH) "45 (受限)" else "45 (Restricted)"
+        else -> if (bucket < 0) "-" else bucket.toString()
+    }
 }
 
 val ZhAppStrings = AppStrings(
@@ -365,6 +424,16 @@ val ZhAppStrings = AppStrings(
     toastNotInjected = "system_server 尚未注入，请先在 LSPosed 启用并重启",
     toastNeedLposedRule = "未连接到 LSPosed 服务，无法保存规则",
     toastNeedLposedSetting = "未连接到 LSPosed 服务，无法保存设置",
+    sectionRecentEvents = "最近调度动态",
+    noRecentEvents = "暂无拦截或调度事件",
+    sectionRuntimeStatus = "实时系统状态",
+    runtimeDozeWl = "Doze 白名单",
+    runtimeStandbyBucket = "待机分组",
+    runtimeRunningProcs = "存活进程",
+    runtimeWhitelisted = "已加入",
+    runtimeNotWhitelisted = "未加入",
+    runtimeNotRunning = "未运行",
+    sectionAppEvents = "应用调度日志",
 )
 
 val EnAppStrings = AppStrings(
@@ -437,6 +506,16 @@ val EnAppStrings = AppStrings(
     toastNotInjected = "system_server not injected; enable in LSPosed and reboot",
     toastNeedLposedRule = "LSPosed service not connected; cannot save rule",
     toastNeedLposedSetting = "LSPosed service not connected; cannot save setting",
+    sectionRecentEvents = "Recent Activity",
+    noRecentEvents = "No recent interventions yet",
+    sectionRuntimeStatus = "Runtime Status",
+    runtimeDozeWl = "Doze Whitelist",
+    runtimeStandbyBucket = "Standby Bucket",
+    runtimeRunningProcs = "Running Processes",
+    runtimeWhitelisted = "Whitelisted",
+    runtimeNotWhitelisted = "Not Listed",
+    runtimeNotRunning = "Not running",
+    sectionAppEvents = "App Dispatch Log",
 )
 
 fun stringsFor(lang: AppLanguage): AppStrings = when (lang) {

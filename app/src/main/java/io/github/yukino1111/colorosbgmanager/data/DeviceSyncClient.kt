@@ -6,10 +6,13 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Bundle
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.GlobalRuleFlags
+import io.github.yukino1111.colorosbgmanager.model.PkgRuntimeStatus
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
 import io.github.yukino1111.colorosbgmanager.model.RulesCodec
+import io.github.yukino1111.colorosbgmanager.model.RuntimeEvent
 import io.github.yukino1111.colorosbgmanager.model.SystemSnapshot
 import io.github.yukino1111.colorosbgmanager.ui.AppLanguage
 import io.github.yukino1111.colorosbgmanager.ui.stringsFor
@@ -40,6 +43,10 @@ data class BgMasterUiState(
     val apps: List<InstalledAppEntry> = emptyList(),
     val loadingApps: Boolean = true,
     val loadingSnapshot: Boolean = true,
+    val recentEvents: List<RuntimeEvent> = emptyList(),
+    val detailRuntime: PkgRuntimeStatus? = null,
+    val detailEvents: List<RuntimeEvent> = emptyList(),
+    val loadingDetailRuntime: Boolean = false,
     val statusMessage: String? = null,
 )
 
@@ -99,8 +106,8 @@ class DeviceSyncClient(private val context: Context) {
 
     suspend fun refreshSnapshot(showResultToast: Boolean = false) {
         _state.update { it.copy(loadingSnapshot = true) }
-        val snap = withContext(Dispatchers.IO) {
-            runCatching {
+        val (snap, events) = withContext(Dispatchers.IO) {
+            val snapshot = runCatching {
                 val bundle = context.contentResolver.call(
                     Uri.parse(RulesCodec.BRIDGE_URI),
                     RulesCodec.BRIDGE_METHOD,
@@ -109,6 +116,12 @@ class DeviceSyncClient(private val context: Context) {
                 )
                 SystemSnapshot.fromBundle(bundle)
             }.getOrDefault(SystemSnapshot(serverInjected = false))
+            val runtimeEvents = if (snapshot.serverInjected) {
+                queryRuntimeEvents(null)
+            } else {
+                emptyList()
+            }
+            snapshot to runtimeEvents
         }
         _state.update { current ->
             val strings = stringsFor(current.language)
@@ -123,9 +136,52 @@ class DeviceSyncClient(private val context: Context) {
             } else {
                 current.statusMessage
             }
-            current.copy(snapshot = snap, loadingSnapshot = false, statusMessage = msg)
+            current.copy(
+                snapshot = snap,
+                loadingSnapshot = false,
+                recentEvents = events,
+                statusMessage = msg,
+            )
         }
     }
+
+    suspend fun loadPackageRuntime(pkgName: String) {
+        _state.update { it.copy(loadingDetailRuntime = true) }
+        val (runtime, events) = withContext(Dispatchers.IO) {
+            val bundle = runCatching {
+                context.contentResolver.call(
+                    Uri.parse(RulesCodec.BRIDGE_URI),
+                    RulesCodec.BRIDGE_RUNTIME_METHOD,
+                    pkgName,
+                    null,
+                )
+            }.getOrNull()
+            val status = PkgRuntimeStatus.fromBundle(bundle, pkgName)
+            val decoded = bundle?.getStringArrayList("events")
+                ?.mapNotNull { RuntimeEvent.decode(it) }
+                .orEmpty()
+            status to decoded
+        }
+        _state.update {
+            it.copy(
+                detailRuntime = runtime,
+                detailEvents = events,
+                loadingDetailRuntime = false,
+            )
+        }
+    }
+
+    private fun queryRuntimeEvents(pkgName: String?): List<RuntimeEvent> = runCatching {
+        val bundle = context.contentResolver.call(
+            Uri.parse(RulesCodec.BRIDGE_URI),
+            RulesCodec.BRIDGE_RUNTIME_METHOD,
+            pkgName,
+            null,
+        )
+        bundle?.getStringArrayList("events")
+            ?.mapNotNull { RuntimeEvent.decode(it) }
+            .orEmpty()
+    }.getOrDefault(emptyList())
 
     suspend fun loadApps() {
         _state.update { it.copy(loadingApps = true) }

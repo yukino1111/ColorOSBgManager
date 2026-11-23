@@ -39,6 +39,9 @@ class MainActivity : ComponentActivity() {
                     onSetRule = syncClient::setRule,
                     onSetAllForPackage = syncClient::setAllSubsystemsForPackage,
                     onUpdateGlobals = syncClient::updateGlobalFlag,
+                    onLoadPackageRuntime = { pkg ->
+                        lifecycleScope.launch { syncClient.loadPackageRuntime(pkg) }
+                    },
                     onDismissMessage = syncClient::clearMessage,
                 )
             }

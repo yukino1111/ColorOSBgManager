@@ -282,6 +282,71 @@ data class SystemSnapshot(
     }
 }
 
+data class RuntimeEvent(
+    val timestampMs: Long,
+    val pkgName: String,
+    val subsystemKey: String,
+    val action: String,
+    val detail: String = "",
+) {
+    fun encode(): String {
+        val cleanDetail = detail.replace('\t', ' ').replace('\n', ' ')
+        return "$timestampMs\t$pkgName\t$subsystemKey\t$action\t$cleanDetail"
+    }
+
+    companion object {
+        fun decode(raw: String): RuntimeEvent? {
+            val parts = raw.split('\t', limit = 5)
+            if (parts.size < 4) return null
+            val ts = parts[0].toLongOrNull() ?: return null
+            return RuntimeEvent(
+                timestampMs = ts,
+                pkgName = parts[1],
+                subsystemKey = parts[2],
+                action = parts[3],
+                detail = parts.getOrElse(4) { "" },
+            )
+        }
+    }
+}
+
+data class PkgRuntimeStatus(
+    val packageName: String = "",
+    val available: Boolean = false,
+    val standbyBucket: Int = -1,
+    val dozeWhitelisted: Boolean = false,
+    val runAnyInBgAllowed: Boolean = true,
+    val runningProcesses: List<String> = emptyList(),
+    val activeServices: List<String> = emptyList(),
+) {
+    fun toBundle(): Bundle = Bundle().apply {
+        putBoolean("ok", available)
+        putString("pkg", packageName)
+        putInt("standby_bucket", standbyBucket)
+        putBoolean("doze_whitelisted", dozeWhitelisted)
+        putBoolean("run_any_in_bg_allowed", runAnyInBgAllowed)
+        putStringArrayList("running_procs", ArrayList(runningProcesses))
+        putStringArrayList("active_services", ArrayList(activeServices))
+    }
+
+    companion object {
+        fun fromBundle(bundle: Bundle?, pkgName: String): PkgRuntimeStatus {
+            if (bundle == null || !bundle.getBoolean("ok", false)) {
+                return PkgRuntimeStatus(packageName = pkgName, available = false)
+            }
+            return PkgRuntimeStatus(
+                packageName = bundle.getString("pkg") ?: pkgName,
+                available = true,
+                standbyBucket = bundle.getInt("standby_bucket", -1),
+                dozeWhitelisted = bundle.getBoolean("doze_whitelisted", false),
+                runAnyInBgAllowed = bundle.getBoolean("run_any_in_bg_allowed", true),
+                runningProcesses = bundle.getStringArrayList("running_procs").orEmpty(),
+                activeServices = bundle.getStringArrayList("active_services").orEmpty(),
+            )
+        }
+    }
+}
+
 object RulesCodec {
     const val PREF_NAME = "bgmanager_rules"
     const val KEY_RULES_SET = "pkg_subsystem_rules"
@@ -292,6 +357,7 @@ object RulesCodec {
 
     const val BRIDGE_URI = "content://settings/system"
     const val BRIDGE_METHOD = "bgmanager_query_snapshot"
+    const val BRIDGE_RUNTIME_METHOD = "bgmanager_query_runtime"
 
     fun encodeRules(rules: Map<String, Map<BgSubsystem, PolicyMode>>): Set<String> {
         val out = LinkedHashSet<String>()
