@@ -147,6 +147,11 @@ data class AppStrings(
     val toastLaunchFailed: String,
     val toastShortcutRequested: String,
     val toastShortcutUnsupported: String,
+    val aboutTitle: String,
+    val aboutRepoTitle: String,
+    val aboutRepoUrl: String,
+    val aboutLinkCopied: String,
+    val aboutOpenFailed: String,
 ) {
     fun subsystemTitle(sub: BgSubsystem): String = when (language) {
         AppLanguage.ZH -> sub.title
@@ -568,6 +573,11 @@ val ZhAppStrings = AppStrings(
     toastLaunchFailed = "启动失败，未找到该用户的启动入口",
     toastShortcutRequested = "已请求桌面添加直启快捷方式",
     toastShortcutUnsupported = "当前桌面不支持创建固定快捷方式",
+    aboutTitle = "关于",
+    aboutRepoTitle = "源代码仓库",
+    aboutRepoUrl = "https://github.com/yukino1111/ColorOSBgManager",
+    aboutLinkCopied = "仓库链接已复制到剪贴板",
+    aboutOpenFailed = "未找到可用浏览器，链接已复制到剪贴板",
 )
 
 val EnAppStrings = AppStrings(
@@ -705,6 +715,11 @@ val EnAppStrings = AppStrings(
     toastLaunchFailed = "Launch failed for this user",
     toastShortcutRequested = "Shortcut pin requested",
     toastShortcutUnsupported = "Pinned shortcuts not supported by launcher",
+    aboutTitle = "About",
+    aboutRepoTitle = "Source Repository",
+    aboutRepoUrl = "https://github.com/yukino1111/ColorOSBgManager",
+    aboutLinkCopied = "Repository URL copied to clipboard",
+    aboutOpenFailed = "No browser found, URL copied to clipboard",
 )
 
 fun stringsFor(lang: AppLanguage): AppStrings = when (lang) {

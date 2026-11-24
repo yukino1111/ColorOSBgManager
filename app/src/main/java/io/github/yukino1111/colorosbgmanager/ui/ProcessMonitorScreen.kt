@@ -18,38 +18,39 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -59,8 +60,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.yukino1111.colorosbgmanager.data.BgMasterUiState
@@ -207,25 +208,10 @@ internal fun ProcessesTab(
                 .animateContentSize(animationSpec = motionScheme.defaultSpatialSpec()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
+            Md3eSearchField(
                 value = searchQuery,
                 onValueChange = onSearchChange,
-                modifier = Modifier.fillMaxWidth(),
-                shape = CircleShapePlaceholder,
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchChange("") }) {
-                            Icon(Icons.Rounded.Close, contentDescription = null)
-                        }
-                    }
-                },
-                placeholder = {
-                    Text(
-                        if (category == ProcessCategoryFilter.ROOT) strings.searchRootPlaceholder else strings.searchAppsPlaceholder,
-                    )
-                },
+                placeholder = if (category == ProcessCategoryFilter.ROOT) strings.searchRootPlaceholder else strings.searchAppsPlaceholder,
             )
 
             Row(
@@ -288,8 +274,8 @@ internal fun ProcessesTab(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
                     ) {
                         item(key = "hdr_root_procs") {
                             SectionHeaderRow(
@@ -299,9 +285,11 @@ internal fun ProcessesTab(
                                 accent = true,
                             )
                         }
-                        items(filteredRootProcs, key = { "root_${it.pid}" }) { proc ->
+                        itemsIndexed(filteredRootProcs, key = { _, proc -> "root_${proc.pid}" }) { idx, proc ->
                             RootProcessRowCard(
                                 proc = proc,
+                                index = idx,
+                                count = filteredRootProcs.size,
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = motionScheme.defaultEffectsSpec(),
                                     placementSpec = motionScheme.defaultSpatialSpec(),
@@ -321,8 +309,8 @@ internal fun ProcessesTab(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
             ) {
                 item(key = "hdr_proc_running") {
                     CollapsibleSectionHeader(
@@ -335,10 +323,12 @@ internal fun ProcessesTab(
                     )
                 }
                 if (runningExpanded) {
-                    items(runningList, key = { "run_${it.first.uniqueKey()}" }) { (app, summary) ->
+                    itemsIndexed(runningList, key = { _, pair -> "run_${pair.first.uniqueKey()}" }) { idx, (app, summary) ->
                         AppProcessRowCard(
                             app = app,
                             summary = summary,
+                            index = idx,
+                            count = runningList.size,
                             showUserBadge = app.userId != 0 || app.packageName in multiUserPkgs,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
@@ -361,10 +351,12 @@ internal fun ProcessesTab(
                     )
                 }
                 if (cachedExpanded) {
-                    items(cachedList, key = { "cch_${it.first.uniqueKey()}" }) { (app, summary) ->
+                    itemsIndexed(cachedList, key = { _, pair -> "cch_${pair.first.uniqueKey()}" }) { idx, (app, summary) ->
                         AppProcessRowCard(
                             app = app,
                             summary = summary,
+                            index = idx,
+                            count = cachedList.size,
                             showUserBadge = app.userId != 0 || app.packageName in multiUserPkgs,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
@@ -387,10 +379,12 @@ internal fun ProcessesTab(
                     )
                 }
                 if (stoppedExpanded) {
-                    items(stoppedList, key = { "stp_${it.first.uniqueKey()}" }) { (app, summary) ->
+                    itemsIndexed(stoppedList, key = { _, pair -> "stp_${pair.first.uniqueKey()}" }) { idx, (app, summary) ->
                         AppProcessRowCard(
                             app = app,
                             summary = summary,
+                            index = idx,
+                            count = stoppedList.size,
                             showUserBadge = app.userId != 0 || app.packageName in multiUserPkgs,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
@@ -426,8 +420,7 @@ internal fun ProcessesTab(
             title = {
                 Text(
                     "PID ${proc.pid} · ${proc.user} (${proc.uid})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
                 )
             },
             text = {
@@ -460,8 +453,7 @@ internal fun ProcessesTab(
     }
 }
 
-private val CircleShapePlaceholder = RoundedCornerShape(28.dp)
-
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun CollapsibleSectionHeader(
     icon: ImageVector,
@@ -476,15 +468,14 @@ private fun CollapsibleSectionHeader(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
-            .padding(top = 6.dp, bottom = 2.dp),
+            .padding(top = 10.dp, bottom = 6.dp, start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
         Text(
             "$title ($count)",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelLargeEmphasized,
             color = tint,
             modifier = Modifier.weight(1f),
         )
@@ -502,117 +493,112 @@ private fun CollapsibleSectionHeader(
 private fun AppProcessRowCard(
     app: InstalledAppEntry,
     summary: AppProcessSummary,
+    index: Int,
+    count: Int,
     showUserBadge: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            app.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        if (showUserBadge) {
-                            StatusPill(text = strings.userBadge(app.userId), active = true)
-                        }
-                        if (app.isSuspended) {
-                            StatusPill(text = strings.freezeStatusSuspended, active = false)
-                        }
-                    }
-                    Text(
-                        app.packageName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (app.isSystem) {
-                    StatusPill(text = strings.systemTag, active = false)
-                }
-            }
-
-            if (summary.bucket == ProcessRunBucket.STOPPED) {
+    SegmentedListItem(
+        onClick = onClick,
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        leadingContent = {
+            DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
+        },
+        trailingContent = if (app.isSystem) {
+            { StatusPill(text = strings.systemTag, active = false) }
+        } else {
+            null
+        },
+        supportingContent = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = strings.runtimeNotRunning,
-                    style = MaterialTheme.typography.labelSmall,
+                    app.packageName,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            } else {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    StatusPill(
-                        text = "${strings.procMemLabel} ${formatMemoryKb(summary.totalMemoryKb)}",
-                        active = summary.bucket == ProcessRunBucket.RUNNING,
+                if (summary.bucket == ProcessRunBucket.STOPPED) {
+                    Text(
+                        text = strings.runtimeNotRunning,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    StatusPill(
-                        text = "${strings.procCpuLabel} ${formatCpuPercent(summary.totalCpuPercent)}",
-                        active = summary.totalCpuPercent >= 1f,
-                    )
-                    StatusPill(
-                        text = "${strings.procUptimeLabel} ${formatDurationMs(summary.maxUptimeMs)}",
-                        active = false,
-                    )
-                    StatusPill(
-                        text = strings.procAndSvcCount(summary.processCount, summary.serviceCount),
-                        active = summary.serviceCount > 0,
-                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        StatusPill(
+                            text = "${strings.procMemLabel} ${formatMemoryKb(summary.totalMemoryKb)}",
+                            active = summary.bucket == ProcessRunBucket.RUNNING,
+                        )
+                        StatusPill(
+                            text = "${strings.procCpuLabel} ${formatCpuPercent(summary.totalCpuPercent)}",
+                            active = summary.totalCpuPercent >= 1f,
+                        )
+                        StatusPill(
+                            text = "${strings.procUptimeLabel} ${formatDurationMs(summary.maxUptimeMs)}",
+                            active = false,
+                        )
+                        StatusPill(
+                            text = strings.procAndSvcCount(summary.processCount, summary.serviceCount),
+                            active = summary.serviceCount > 0,
+                        )
+                    }
                 }
             }
-        }
-    }
+        },
+        content = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    app.label,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (showUserBadge) {
+                    StatusPill(text = strings.userBadge(app.userId), active = true)
+                }
+                if (app.isSuspended) {
+                    StatusPill(text = strings.freezeStatusSuspended, active = false)
+                }
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun RootProcessRowCard(
     proc: RootProcessInfo,
+    index: Int,
+    count: Int,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                text = proc.cmdline,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+    SegmentedListItem(
+        onClick = onClick,
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        modifier = modifier,
+        supportingContent = {
             FlowRow(
+                modifier = Modifier.padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -622,8 +608,16 @@ private fun RootProcessRowCard(
                 StatusPill(text = "${strings.procCpuLabel} ${formatCpuPercent(proc.cpuPercent)}", active = proc.cpuPercent >= 1f)
                 StatusPill(text = "${proc.state} · ${proc.elapsedTime}", active = false)
             }
-        }
-    }
+        },
+        content = {
+            Text(
+                text = proc.cmdline,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -638,6 +632,7 @@ internal fun AppProcessDetailPage(
 ) {
     val strings = LocalAppStrings.current
     val motionScheme = MaterialTheme.motionScheme
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val summary = remember(state.appProcessSummaries, target) {
         state.appProcessSummaries.firstOrNull { it.packageName == target.packageName && it.userId == target.userId }
     }
@@ -653,8 +648,15 @@ internal fun AppProcessDetailPage(
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = strings.backCd)
@@ -668,6 +670,7 @@ internal fun AppProcessDetailPage(
                         ) {
                             Text(
                                 text = appEntry?.label ?: target.packageName,
+                                style = MaterialTheme.typography.titleLargeEmphasized,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -694,19 +697,22 @@ internal fun AppProcessDetailPage(
     ) { padding ->
         LazyColumn(
             modifier = Modifier.padding(padding).fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item(key = "proc_detail_summary") {
-                ElevatedCard(shape = MaterialTheme.shapes.medium) {
+                Card(
+                    shape = MaterialTheme.shapes.large,
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                ) {
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
                             text = strings.procAndSvcCount(summary?.processCount ?: 0, summary?.serviceCount ?: 0),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMediumEmphasized,
                         )
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -745,15 +751,18 @@ internal fun AppProcessDetailPage(
                 }
                 if (summary.extraServices.isNotEmpty()) {
                     item(key = "extra_services_card") {
-                        ElevatedCard(shape = MaterialTheme.shapes.medium) {
+                        Card(
+                            shape = MaterialTheme.shapes.large,
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        ) {
                             Column(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Text(
                                     strings.extraServicesHeader,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleSmallEmphasized,
                                 )
                                 summary.extraServices.forEach { svc ->
                                     Text(
@@ -777,12 +786,14 @@ private fun SingleProcessDetailCard(
     modifier: Modifier = Modifier,
 ) {
     val strings = LocalAppStrings.current
-    ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
+    Card(
+        shape = MaterialTheme.shapes.large,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
@@ -792,8 +803,7 @@ private fun SingleProcessDetailCard(
             ) {
                 Text(
                     text = proc.processName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmallEmphasized,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -816,8 +826,7 @@ private fun SingleProcessDetailCard(
 
             Text(
                 text = strings.hostedServicesCount(proc.services.size),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelLargeEmphasized,
             )
             if (proc.services.isEmpty()) {
                 Text(
@@ -829,13 +838,13 @@ private fun SingleProcessDetailCard(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     proc.services.forEach { svc ->
                         Surface(
-                            shape = MaterialTheme.shapes.extraSmall,
+                            shape = MaterialTheme.shapes.small,
                             color = MaterialTheme.colorScheme.surfaceContainerHigh,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(
                                 text = svc,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             )
                         }

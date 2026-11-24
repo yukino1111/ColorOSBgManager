@@ -1,12 +1,17 @@
 package io.github.yukino1111.colorosbgmanager.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,9 +20,12 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,20 +36,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.AddToHomeScreen
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ListAlt
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AcUnit
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.BatteryChargingFull
@@ -65,16 +74,19 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -83,27 +95,25 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -118,11 +128,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import io.github.yukino1111.colorosbgmanager.BuildConfig
 import io.github.yukino1111.colorosbgmanager.data.BgMasterUiState
 import io.github.yukino1111.colorosbgmanager.data.InstalledAppEntry
 import io.github.yukino1111.colorosbgmanager.model.AppUserKey
@@ -235,14 +248,15 @@ private fun BgMasterScreenContent(
     var procSearchQuery by remember { mutableStateOf("") }
     var procCategory by remember { mutableStateOf(ProcessCategoryFilter.USER) }
 
-    val homeTopAppBarState = rememberTopAppBarState()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(homeTopAppBarState)
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val overviewListState = rememberLazyListState()
     val appsListState = rememberLazyListState()
     val processesListState = rememberLazyListState()
     val nativeListsIndexState = rememberLazyListState()
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val haptics = LocalHapticFeedback.current
+    var showAboutDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.statusMessage) {
         val msg = state.statusMessage ?: return@LaunchedEffect
@@ -263,9 +277,10 @@ private fun BgMasterScreenContent(
         popBack()
     }
 
+    val motionScheme = MaterialTheme.motionScheme
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
+        color = MaterialTheme.colorScheme.surface,
     ) {
         AnimatedContent(
             targetState = route,
@@ -274,11 +289,15 @@ private fun BgMasterScreenContent(
                     (initialState is ScreenRoute.AppDetail && targetState is ScreenRoute.AppProcessDetail) ||
                     (initialState !is ScreenRoute.Home && targetState is ScreenRoute.Home)
                 if (goingBack) {
-                    (slideInHorizontally(tween(240)) { -it / 6 } + fadeIn(tween(220))) togetherWith
-                        (slideOutHorizontally(tween(220)) { it / 6 } + fadeOut(tween(180)))
+                    (slideInHorizontally(motionScheme.defaultSpatialSpec()) { -it / 6 } +
+                        fadeIn(motionScheme.defaultEffectsSpec())) togetherWith
+                        (slideOutHorizontally(motionScheme.defaultSpatialSpec()) { it / 6 } +
+                            fadeOut(motionScheme.fastEffectsSpec()))
                 } else {
-                    (slideInHorizontally(tween(240)) { it / 6 } + fadeIn(tween(220))) togetherWith
-                        (slideOutHorizontally(tween(220)) { -it / 10 } + fadeOut(tween(180)))
+                    (slideInHorizontally(motionScheme.defaultSpatialSpec()) { it / 6 } +
+                        fadeIn(motionScheme.defaultEffectsSpec())) togetherWith
+                        (slideOutHorizontally(motionScheme.defaultSpatialSpec()) { -it / 10 } +
+                            fadeOut(motionScheme.fastEffectsSpec()))
                 }
             },
             label = "route_transition",
@@ -287,31 +306,69 @@ private fun BgMasterScreenContent(
                 ScreenRoute.Home -> {
                     Scaffold(
                         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+                        containerColor = MaterialTheme.colorScheme.surface,
                         snackbarHost = { SnackbarHost(snackbarHostState) },
                         topBar = {
-                            LargeTopAppBar(
+                            TopAppBar(
+                                colors = TopAppBarDefaults.topAppBarColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
                                 title = {
-                                    Column {
-                                        Text(strings.appTitle, fontWeight = FontWeight.Bold)
-                                        val subtitle = when {
-                                            !state.xposedConnected -> strings.lposedDisconnected
-                                            !state.snapshot.serverInjected -> strings.inactiveRebootHint
-                                            else -> strings.activatedSummary(state.rules.size)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f, fill = false)
+                                                .combinedClickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null,
+                                                    onClick = {},
+                                                    onLongClick = {
+                                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        showAboutDialog = true
+                                                    },
+                                                ),
+                                        ) {
+                                            Text(
+                                                strings.appTitle,
+                                                style = MaterialTheme.typography.titleLargeEmphasized,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            val subtitle = when {
+                                                !state.xposedConnected -> strings.lposedDisconnected
+                                                !state.snapshot.serverInjected -> strings.inactiveRebootHint
+                                                else -> strings.activatedSummary(state.rules.size)
+                                            }
+                                            Text(
+                                                subtitle,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
                                         }
-                                        Text(
-                                            subtitle,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        FilledTonalButton(
+                                            onClick = onToggleLanguage,
+                                            shapes = ButtonDefaults.shapes(),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                            modifier = Modifier.height(32.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Translate,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(15.dp),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                text = strings.langSwitchLabel,
+                                                style = MaterialTheme.typography.labelMediumEmphasized,
+                                            )
+                                        }
                                     }
                                 },
                                 actions = {
-                                    TextButton(onClick = onToggleLanguage) {
-                                        Text(
-                                            text = strings.langSwitchLabel,
-                                            fontWeight = FontWeight.SemiBold,
-                                        )
-                                    }
                                     IconButton(
                                         onClick = onRefreshAll,
                                         enabled = !state.loadingSnapshot && !state.loadingApps,
@@ -352,7 +409,6 @@ private fun BgMasterScreenContent(
                             }
                         },
                     ) { padding ->
-                        val motionScheme = MaterialTheme.motionScheme
                         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                             AnimatedContent(
                                 targetState = selectedTab,
@@ -459,8 +515,13 @@ private fun BgMasterScreenContent(
             }
         }
     }
+
+    if (showAboutDialog) {
+        BgManagerAboutDialog(onDismiss = { showAboutDialog = false })
+    }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DashboardTab(
     state: BgMasterUiState,
@@ -481,13 +542,14 @@ private fun DashboardTab(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            ElevatedCard(
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.elevatedCardColors(
+            Card(
+                shape = MaterialTheme.shapes.large,
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                colors = CardDefaults.cardColors(
                     containerColor = if (state.snapshot.serverInjected) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
@@ -496,7 +558,7 @@ private fun DashboardTab(
                 ),
             ) {
                 Row(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
@@ -512,8 +574,7 @@ private fun DashboardTab(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = if (state.snapshot.serverInjected) strings.statusActive else strings.statusInactive,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMediumEmphasized,
                         )
                         Text(
                             text = when {
@@ -526,7 +587,10 @@ private fun DashboardTab(
                         )
                     }
                     if (!state.snapshot.serverInjected) {
-                        Button(onClick = onRefreshAll) {
+                        Button(
+                            onClick = onRefreshAll,
+                            shapes = ButtonDefaults.shapes(),
+                        ) {
                             Text(strings.recheck)
                         }
                     }
@@ -535,10 +599,15 @@ private fun DashboardTab(
         }
 
         item {
-            ElevatedCard(
-                shape = RoundedCornerShape(22.dp),
+            Card(
+                shape = MaterialTheme.shapes.large,
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.large)
                     .clickable(onClick = onOpenNativeLists),
             ) {
                 Row(
@@ -556,7 +625,7 @@ private fun DashboardTab(
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(strings.nativeListsTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text(strings.nativeListsTitle, style = MaterialTheme.typography.titleSmallEmphasized)
                         Text(
                             text = if (state.snapshot.serverInjected) {
                                 strings.nativeListsDesc(NativeListKind.entries.size, totalNativeCount)
@@ -575,86 +644,96 @@ private fun DashboardTab(
         item {
             Text(
                 strings.sectionSubsystems,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMediumEmphasized,
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
 
-        items(BgSubsystem.entries) { subsystem ->
-            val hooked = state.snapshot.hookStatus[subsystem.key] ?: false
-            val allowCount = state.rules.values.count { it[subsystem] == PolicyMode.FORCE_ALLOW }
-            val restrictCount = state.rules.values.count { it[subsystem]?.isRestrict == true }
-            val (nativeWhiteCount, nativeBlackCount) = remember(state.snapshot, subsystem) {
-                nativeCountsForSubsystem(state.snapshot, subsystem)
-            }
-
-            ElevatedCard(
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onJumpToSubsystem(subsystem) },
-            ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.size(42.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(iconForSubsystem(subsystem), contentDescription = null)
-                        }
+        item(key = "subsystems_group") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                BgSubsystem.entries.forEach { subsystem ->
+                    val hooked = state.snapshot.hookStatus[subsystem.key] ?: false
+                    val allowCount = state.rules.values.count { it[subsystem] == PolicyMode.FORCE_ALLOW }
+                    val restrictCount = state.rules.values.count { it[subsystem]?.isRestrict == true }
+                    val (nativeWhiteCount, nativeBlackCount) = remember(state.snapshot, subsystem) {
+                        nativeCountsForSubsystem(state.snapshot, subsystem)
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+
+                    Card(
+                        shape = MaterialTheme.shapes.large,
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.large)
+                            .clickable { onJumpToSubsystem(subsystem) },
+                    ) {
                         Row(
+                            modifier = Modifier.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(strings.subsystemTitle(subsystem), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            StatusPill(
-                                text = if (hooked) strings.hookOk else strings.hookMissing,
-                                active = hooked,
-                            )
-                        }
-                        Text(
-                            strings.subsystemDesc(subsystem),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = strings.systemCounts(nativeWhiteCount, nativeBlackCount),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (allowCount > 0 || restrictCount > 0) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.size(42.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(iconForSubsystem(subsystem), contentDescription = null)
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        strings.subsystemTitle(subsystem),
+                                        style = MaterialTheme.typography.titleSmallEmphasized,
+                                    )
+                                    StatusPill(
+                                        text = if (hooked) strings.hookOk else strings.hookMissing,
+                                        active = hooked,
+                                    )
+                                }
                                 Text(
-                                    text = strings.moduleCounts(allowCount, restrictCount),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            } else {
-                                Text(
-                                    text = strings.unmodified,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    strings.subsystemDesc(subsystem),
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = strings.systemCounts(nativeWhiteCount, nativeBlackCount),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (allowCount > 0 || restrictCount > 0) {
+                                        Text(
+                                            text = strings.moduleCounts(allowCount, restrictCount),
+                                            style = MaterialTheme.typography.labelSmallEmphasized,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    } else {
+                                        Text(
+                                            text = strings.unmodified,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                             }
+                            Icon(
+                                Icons.Rounded.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
-                    Icon(
-                        Icons.Rounded.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
         }
@@ -662,42 +741,47 @@ private fun DashboardTab(
         item {
             Text(
                 strings.sectionGlobals,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMediumEmphasized,
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
 
         item {
-            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+            Card(
+                shape = MaterialTheme.shapes.large,
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     GlobalToggleRow(
                         title = strings.globalGuardElfTitle,
                         subtitle = strings.globalGuardElfSub,
                         checked = state.globalFlags.disableGuardElfCpuKill,
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(disableGuardElfCpuKill = v) } },
                     )
-                    HorizontalDivider()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     GlobalToggleRow(
                         title = strings.globalBroadcastTitle,
                         subtitle = strings.globalBroadcastSub,
                         checked = state.globalFlags.disableBroadcastQuotaGlobal,
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(disableBroadcastQuotaGlobal = v) } },
                     )
-                    HorizontalDivider()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     GlobalToggleRow(
                         title = strings.globalStrictTitle,
                         subtitle = strings.globalStrictSub,
                         checked = state.globalFlags.disableStrictModeFreeze,
                         onCheckedChange = { v -> onUpdateGlobals { it.copy(disableStrictModeFreeze = v) } },
                     )
-                    HorizontalDivider()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(strings.autoFreezeDelayTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(strings.autoFreezeDelayTitle, style = MaterialTheme.typography.titleSmallEmphasized)
                             Text(
                                 strings.autoFreezeDelaySub(state.globalFlags.autoFreezeDelaySec),
                                 style = MaterialTheme.typography.bodySmall,
@@ -705,18 +789,14 @@ private fun DashboardTab(
                             )
                         }
                         val delayOptions = RulesCodec.AUTO_FREEZE_DELAY_OPTIONS
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            delayOptions.forEachIndexed { idx, sec ->
-                                SegmentedButton(
-                                    selected = state.globalFlags.autoFreezeDelaySec == sec,
-                                    onClick = { onUpdateGlobals { it.copy(autoFreezeDelaySec = sec) } },
-                                    shape = SegmentedButtonDefaults.itemShape(idx, delayOptions.size),
-                                    label = { Text(strings.autoFreezeDelayOptionLabel(sec)) },
-                                )
-                            }
-                        }
+                        ConnectedToggleRow(
+                            items = delayOptions,
+                            isSelected = { state.globalFlags.autoFreezeDelaySec == it },
+                            label = { strings.autoFreezeDelayOptionLabel(it) },
+                            onSelect = { sec -> onUpdateGlobals { it.copy(autoFreezeDelaySec = sec) } },
+                        )
                     }
-                    HorizontalDivider()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     GlobalToggleRow(
                         title = strings.globalVerboseTitle,
                         subtitle = strings.globalVerboseSub,
@@ -731,8 +811,7 @@ private fun DashboardTab(
             item {
                 Text(
                     strings.sectionRecentEvents,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
@@ -890,14 +969,11 @@ private fun AppsTab(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedTextField(
+                Md3eSearchField(
                     value = searchQuery,
                     onValueChange = onSearchChange,
+                    placeholder = strings.searchAppsPlaceholder,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(28.dp),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                    placeholder = { Text(strings.searchAppsPlaceholder) },
                 )
 
                 PopupFilterButton(
@@ -980,8 +1056,8 @@ private fun AppsTab(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
             ) {
                 if (groupedApps.overridden.isNotEmpty()) {
                     item(key = "hdr_overridden") {
@@ -992,13 +1068,15 @@ private fun AppsTab(
                             accent = true,
                         )
                     }
-                    items(groupedApps.overridden, key = { "ov_${it.userId}|${it.packageName}" }) { app ->
+                    itemsIndexed(groupedApps.overridden, key = { _, it -> "ov_${it.userId}|${it.packageName}" }) { idx, app ->
                         AppRowItem(
                             app = app,
                             pkgRules = state.rules[app.key].orEmpty(),
                             isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
                             selectedSubsystems = selectedSubsystems,
+                            index = idx,
+                            count = groupedApps.overridden.size,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
                                 placementSpec = motionScheme.defaultSpatialSpec(),
@@ -1023,13 +1101,15 @@ private fun AppsTab(
                         )
                     }
                     if (nativeSectionExpanded) {
-                        items(groupedApps.nativeHits, key = { "nat_${it.userId}|${it.packageName}" }) { app ->
+                        itemsIndexed(groupedApps.nativeHits, key = { _, it -> "nat_${it.userId}|${it.packageName}" }) { idx, app ->
                             AppRowItem(
                                 app = app,
                                 pkgRules = state.rules[app.key].orEmpty(),
                                 isAutoFreeze = app.key in state.autoFreezePkgs,
                                 snapshot = state.snapshot,
                                 selectedSubsystems = selectedSubsystems,
+                                index = idx,
+                                count = groupedApps.nativeHits.size,
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = motionScheme.defaultEffectsSpec(),
                                     placementSpec = motionScheme.defaultSpatialSpec(),
@@ -1051,13 +1131,15 @@ private fun AppsTab(
                             accent = false,
                         )
                     }
-                    items(groupedApps.neutral, key = { "neu_${it.userId}|${it.packageName}" }) { app ->
+                    itemsIndexed(groupedApps.neutral, key = { _, it -> "neu_${it.userId}|${it.packageName}" }) { idx, app ->
                         AppRowItem(
                             app = app,
                             pkgRules = state.rules[app.key].orEmpty(),
                             isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
                             selectedSubsystems = selectedSubsystems,
+                            index = idx,
+                            count = groupedApps.neutral.size,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = motionScheme.defaultEffectsSpec(),
                                 placementSpec = motionScheme.defaultSpatialSpec(),
@@ -1098,6 +1180,7 @@ private data class GroupedAppSections(
     val isEmpty: Boolean get() = overridden.isEmpty() && nativeHits.isEmpty() && neutral.isEmpty()
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun SectionHeaderRow(
     icon: ImageVector,
@@ -1114,15 +1197,14 @@ internal fun SectionHeaderRow(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (collapsible && onToggleExpand != null) Modifier.clickable(onClick = onToggleExpand) else Modifier)
-            .padding(top = 6.dp, bottom = 2.dp, start = 2.dp, end = 2.dp),
+            .padding(top = 10.dp, bottom = 6.dp, start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(6.dp))
         Text(
             text = "$title ($count)",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelLargeEmphasized,
             color = tint,
             modifier = Modifier.weight(1f),
         )
@@ -1144,6 +1226,8 @@ private fun AppRowItem(
     isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
     selectedSubsystems: Set<BgSubsystem>,
+    index: Int,
+    count: Int,
     modifier: Modifier = Modifier,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
     onOpenDetail: (AppUserKey) -> Unit,
@@ -1155,6 +1239,8 @@ private fun AppRowItem(
             subsystem = singleSub,
             nativeResolution = snapshot.nativeResolutionFor(app.packageName, singleSub),
             currentMode = pkgRules[singleSub] ?: PolicyMode.FOLLOW_SYSTEM,
+            index = index,
+            count = count,
             modifier = modifier,
             onModeSelected = { mode -> onSetRule(app.key, singleSub, mode) },
             onOpenDetail = { onOpenDetail(app.key) },
@@ -1166,6 +1252,8 @@ private fun AppRowItem(
             isAutoFreeze = isAutoFreeze,
             snapshot = snapshot,
             selectedSubsystems = selectedSubsystems,
+            index = index,
+            count = count,
             modifier = modifier,
             onClick = { onOpenDetail(app.key) },
         )
@@ -1179,6 +1267,8 @@ private fun SingleDimensionAppCard(
     subsystem: BgSubsystem,
     nativeResolution: io.github.yukino1111.colorosbgmanager.model.NativeResolution,
     currentMode: PolicyMode,
+    index: Int,
+    count: Int,
     modifier: Modifier = Modifier,
     onModeSelected: (PolicyMode) -> Unit,
     onOpenDetail: () -> Unit,
@@ -1186,55 +1276,18 @@ private fun SingleDimensionAppCard(
     val strings = LocalAppStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
 
-    ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpenDetail)
-            .animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    SegmentedListItem(
+        onClick = onOpenDetail,
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        leadingContent = {
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        app.label,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (app.userId != 0) {
-                        StatusPill(text = strings.userBadge(app.userId), active = true)
-                    }
-                    if (app.isSuspended) {
-                        StatusPill(text = strings.freezeStatusSuspended, active = false)
-                    }
-                }
-                Text(
-                    app.packageName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (nativeResolution.state != NativeState.NEUTRAL) {
-                    NativeOutlinedBadge(
-                        text = strings.formatNativeTag(nativeResolution),
-                        isErrorBadge = nativeResolution.state == NativeState.BLACKLISTED &&
-                            nativeResolution.cpuTier != NativeCpuTier.HBG,
-                    )
-                }
-            }
-            Spacer(Modifier.width(8.dp))
+        },
+        trailingContent = {
             Box {
                 ModeSelectorPill(
                     mode = currentMode,
@@ -1261,8 +1314,46 @@ private fun SingleDimensionAppCard(
                     }
                 }
             }
-        }
-    }
+        },
+        supportingContent = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    app.packageName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (nativeResolution.state != NativeState.NEUTRAL) {
+                    NativeOutlinedBadge(
+                        text = strings.formatNativeTag(nativeResolution),
+                        isErrorBadge = nativeResolution.state == NativeState.BLACKLISTED &&
+                            nativeResolution.cpuTier != NativeCpuTier.HBG,
+                    )
+                }
+            }
+        },
+        content = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    app.label,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (app.userId != 0) {
+                    StatusPill(text = strings.userBadge(app.userId), active = true)
+                }
+                if (app.isSuspended) {
+                    StatusPill(text = strings.freezeStatusSuspended, active = false)
+                }
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -1273,6 +1364,8 @@ private fun AllDimensionsAppCard(
     isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
     selectedSubsystems: Set<BgSubsystem>,
+    index: Int,
+    count: Int,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -1291,93 +1384,92 @@ private fun AllDimensionsAppCard(
         }
     }
 
-    ElevatedCard(
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            app.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        if (app.userId != 0) {
-                            StatusPill(text = strings.userBadge(app.userId), active = true)
-                        }
-                        if (app.isSuspended) {
-                            StatusPill(text = strings.freezeStatusSuspended, active = false)
-                        }
-                    }
-                    Text(
-                        app.packageName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (app.isSystem) {
-                    StatusPill(text = strings.systemTag, active = false)
-                }
-            }
-
-            if (overrides.isEmpty() && nativeNonNeutral.isEmpty() && !isAutoFreeze) {
+    SegmentedListItem(
+        onClick = onClick,
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        leadingContent = {
+            DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
+        },
+        trailingContent = if (app.isSystem) {
+            { StatusPill(text = strings.systemTag, active = false) }
+        } else {
+            null
+        },
+        supportingContent = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = strings.defaultRulesText,
-                    style = MaterialTheme.typography.labelSmall,
+                    app.packageName,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            } else {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (isAutoFreeze) {
-                        StatusPill(text = strings.autoFreezeSwitchTitle, active = true)
-                    }
-                    overrides.forEach { (sub, mode) ->
-                        val origNative = snapshot.nativeResolutionFor(app.packageName, sub)
-                        val origSuffix = if (origNative.state != NativeState.NEUTRAL) {
-                            " (${strings.formatNativeTag(origNative)})"
-                        } else {
-                            ""
+                if (overrides.isEmpty() && nativeNonNeutral.isEmpty() && !isAutoFreeze) {
+                    Text(
+                        text = strings.defaultRulesText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (isAutoFreeze) {
+                            StatusPill(text = strings.autoFreezeSwitchTitle, active = true)
                         }
-                        OverrideFilledBadge(
-                            text = "${strings.subsystemShort(sub)}: ${strings.overrideShortTag(mode, sub)}$origSuffix",
-                            mode = mode,
-                        )
-                    }
-                    nativeNonNeutral.forEach { (sub, native) ->
-                        NativeOutlinedBadge(
-                            text = "${strings.subsystemShort(sub)}: ${strings.formatNativeTag(native)}",
-                            isErrorBadge = native.state == NativeState.BLACKLISTED &&
-                                native.cpuTier != NativeCpuTier.HBG,
-                        )
+                        overrides.forEach { (sub, mode) ->
+                            val origNative = snapshot.nativeResolutionFor(app.packageName, sub)
+                            val origSuffix = if (origNative.state != NativeState.NEUTRAL) {
+                                " (${strings.formatNativeTag(origNative)})"
+                            } else {
+                                ""
+                            }
+                            OverrideFilledBadge(
+                                text = "${strings.subsystemShort(sub)}: ${strings.overrideShortTag(mode, sub)}$origSuffix",
+                                mode = mode,
+                            )
+                        }
+                        nativeNonNeutral.forEach { (sub, native) ->
+                            NativeOutlinedBadge(
+                                text = "${strings.subsystemShort(sub)}: ${strings.formatNativeTag(native)}",
+                                isErrorBadge = native.state == NativeState.BLACKLISTED &&
+                                    native.cpuTier != NativeCpuTier.HBG,
+                            )
+                        }
                     }
                 }
             }
-        }
-    }
+        },
+        content = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    app.label,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (app.userId != 0) {
+                    StatusPill(text = strings.userBadge(app.userId), active = true)
+                }
+                if (app.isSuspended) {
+                    StatusPill(text = strings.freezeStatusSuspended, active = false)
+                }
+            }
+        },
+    )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun AppDetailPage(
     target: AppUserKey,
@@ -1395,6 +1487,7 @@ private fun AppDetailPage(
     onPinShortcut: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val packageName = target.packageName
     val pkgRules = state.rules[target].orEmpty()
     val runtime = state.detailRuntime?.takeIf { it.packageName == packageName && it.userId == target.userId }
@@ -1421,9 +1514,16 @@ private fun AppDetailPage(
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = strings.backCd)
@@ -1442,6 +1542,7 @@ private fun AppDetailPage(
                             ) {
                                 Text(
                                     appEntry?.label ?: packageName,
+                                    style = MaterialTheme.typography.titleLargeEmphasized,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f, fill = false),
@@ -1481,7 +1582,7 @@ private fun AppDetailPage(
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.snapshot.serverInjected) {
@@ -1491,11 +1592,15 @@ private fun AppDetailPage(
             }
 
             item {
-                ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+                Card(
+                    shape = MaterialTheme.shapes.large,
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(14.dp),
+                            .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1531,8 +1636,7 @@ private fun AppDetailPage(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             strings.subsystemTitle(sub),
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleSmallEmphasized,
                                         )
                                         val effectiveText = when (currentMode) {
                                             PolicyMode.FOLLOW_SYSTEM -> when (nativeRes.state) {
@@ -1544,13 +1648,16 @@ private fun AppDetailPage(
                                         }
                                         Text(
                                             effectiveText,
-                                            style = MaterialTheme.typography.labelSmall,
+                                            style = if (currentMode != PolicyMode.FOLLOW_SYSTEM) {
+                                                MaterialTheme.typography.labelSmallEmphasized
+                                            } else {
+                                                MaterialTheme.typography.labelSmall
+                                            },
                                             color = if (currentMode != PolicyMode.FOLLOW_SYSTEM) {
                                                 MaterialTheme.colorScheme.primary
                                             } else {
                                                 MaterialTheme.colorScheme.onSurfaceVariant
                                             },
-                                            fontWeight = if (currentMode != PolicyMode.FOLLOW_SYSTEM) FontWeight.SemiBold else FontWeight.Normal,
                                         )
                                     }
                                     if (nativeRes.state == NativeState.NEUTRAL) {
@@ -1569,43 +1676,34 @@ private fun AppDetailPage(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 val modes = sub.supportedModes()
-                                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                                    modes.forEachIndexed { idx, mode ->
-                                        SegmentedButton(
-                                            selected = currentMode == mode,
-                                            onClick = { onSetRule(sub, mode) },
-                                            shape = SegmentedButtonDefaults.itemShape(idx, modes.size),
-                                            label = {
-                                                Text(
-                                                    strings.policyModeLabel(mode, sub, compact = modes.size > 3),
-                                                    maxLines = 1,
-                                                    softWrap = false,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                )
-                                            },
-                                        )
-                                    }
-                                }
+                                ConnectedToggleRow(
+                                    items = modes,
+                                    isSelected = { currentMode == it },
+                                    label = { strings.policyModeLabel(it, sub, compact = modes.size > 3) },
+                                    onSelect = { onSetRule(sub, it) },
+                                )
                             }
                         }
                     }
                 }
             }
 
+            item {
+                FreezeControlCard(
+                    serverInjected = state.snapshot.serverInjected,
+                    isSuspended = isSuspended,
+                    isAutoFreeze = isAutoFreeze,
+                    isAutoUnfreeze = isAutoUnfreeze,
+                    canPinShortcut = appEntry != null,
+                    onSetAutoFreeze = onSetAutoFreeze,
+                    onSetAutoUnfreeze = onSetAutoUnfreeze,
+                    onSetSuspended = onSetPackageSuspended,
+                    onLaunchApp = onLaunchApp,
+                    onPinShortcut = onPinShortcut,
+                )
+            }
+
             if (state.snapshot.serverInjected) {
-                item {
-                    FreezeControlCard(
-                        isSuspended = isSuspended,
-                        isAutoFreeze = isAutoFreeze,
-                        isAutoUnfreeze = isAutoUnfreeze,
-                        canPinShortcut = appEntry != null,
-                        onSetAutoFreeze = onSetAutoFreeze,
-                        onSetAutoUnfreeze = onSetAutoUnfreeze,
-                        onSetSuspended = onSetPackageSuspended,
-                        onLaunchApp = onLaunchApp,
-                        onPinShortcut = onPinShortcut,
-                    )
-                }
                 item {
                     RuntimeEventsCard(
                         events = appEvents.take(25),
@@ -1621,6 +1719,7 @@ private fun AppDetailPage(
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun FreezeControlCard(
+    serverInjected: Boolean,
     isSuspended: Boolean,
     isAutoFreeze: Boolean,
     isAutoUnfreeze: Boolean,
@@ -1661,15 +1760,17 @@ private fun FreezeControlCard(
         label = "autoUnfreezeIconTint",
     )
 
-    ElevatedCard(
-        shape = RoundedCornerShape(20.dp),
+    Card(
+        shape = MaterialTheme.shapes.large,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         modifier = Modifier.animateContentSize(animationSpec = motionScheme.defaultSpatialSpec()),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1678,8 +1779,7 @@ private fun FreezeControlCard(
             ) {
                 Text(
                     strings.sectionFreezeControl,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmallEmphasized,
                 )
                 StatusPill(
                     text = if (isSuspended) strings.freezeStatusSuspended else strings.freezeStatusActive,
@@ -1706,12 +1806,12 @@ private fun FreezeControlCard(
                     ) + fadeOut(animationSpec = motionScheme.fastEffectsSpec()),
                 ) {
                     Surface(
-                        shape = MaterialTheme.shapes.small,
+                        shape = MaterialTheme.shapes.medium,
                         color = subContainerColor,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 4.dp, bottom = 4.dp)
-                            .clip(MaterialTheme.shapes.small)
+                            .padding(top = 8.dp)
+                            .clip(MaterialTheme.shapes.medium)
                             .clickable { onSetAutoUnfreeze(!isAutoUnfreeze) },
                     ) {
                         Row(
@@ -1741,8 +1841,7 @@ private fun FreezeControlCard(
                             ) {
                                 Text(
                                     strings.autoUnfreezeSwitchTitle,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.titleSmallEmphasized,
                                 )
                                 Text(
                                     strings.autoUnfreezeSwitchSub,
@@ -1777,12 +1876,14 @@ private fun FreezeControlCard(
             ) {
                 FilledTonalButton(
                     onClick = { onSetSuspended(!isSuspended) },
+                    enabled = serverInjected,
                     shapes = ButtonDefaults.shapes(),
                 ) {
                     Text(if (isSuspended) strings.actionUnfreezeNow else strings.actionFreezeNow)
                 }
                 Button(
                     onClick = onLaunchApp,
+                    enabled = serverInjected,
                     shapes = ButtonDefaults.shapes(),
                 ) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1800,27 +1901,37 @@ private fun FreezeControlCard(
                     }
                 }
             }
+            if (!serverInjected) {
+                Text(
+                    text = strings.systemNotLoadedHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun RuntimeStatusCard(
     runtime: PkgRuntimeStatus?,
 ) {
     val strings = LocalAppStrings.current
-    ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+    Card(
+        shape = MaterialTheme.shapes.large,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
                 strings.sectionRuntimeStatus,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleSmallEmphasized,
             )
             if (runtime == null || !runtime.available) {
                 Text(
@@ -1856,6 +1967,7 @@ private fun RuntimeStatusCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun RuntimeEventsCard(
     events: List<RuntimeEvent>,
@@ -1864,18 +1976,21 @@ private fun RuntimeEventsCard(
 ) {
     val strings = LocalAppStrings.current
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+    Card(
+        shape = MaterialTheme.shapes.large,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (title != null) {
                 Text(
                     title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmallEmphasized,
                 )
             }
             if (events.isEmpty()) {
@@ -1894,15 +2009,14 @@ private fun RuntimeEventsCard(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             val userPrefix = if (ev.userId != 0) "[u${ev.userId}] " else ""
-                            val title = if (showPackageName) {
+                            val eventTitle = if (showPackageName) {
                                 "$userPrefix${ev.pkgName} · ${strings.formatRuntimeAction(ev.action)}"
                             } else {
                                 strings.formatRuntimeAction(ev.action)
                             }
                             Text(
-                                text = title,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
+                                text = eventTitle,
+                                style = MaterialTheme.typography.bodySmallEmphasized,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -1929,7 +2043,7 @@ private fun RuntimeEventsCard(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun NativeListsIndexPage(
     state: BgMasterUiState,
@@ -1938,19 +2052,32 @@ private fun NativeListsIndexPage(
     onSelectKind: (NativeListKind) -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val installedPkgSet = remember(state.apps) { state.apps.mapTo(HashSet()) { it.packageName } }
     val cloudLists = remember { NativeListKind.entries.filter { it.source == NativeSource.CLOUD_DEFAULT } }
     val userLists = remember { NativeListKind.entries.filter { it.source == NativeSource.SYSTEM_USER } }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = strings.backCd)
                     }
                 },
-                title = { Text(strings.nativeListsTitle) },
+                title = {
+                    Text(
+                        strings.nativeListsTitle,
+                        style = MaterialTheme.typography.titleLargeEmphasized,
+                    )
+                },
             )
         },
     ) { padding ->
@@ -1959,8 +2086,8 @@ private fun NativeListsIndexPage(
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
         ) {
             item(key = "hdr_cloud_lists") {
                 SectionHeaderRow(
@@ -1970,11 +2097,13 @@ private fun NativeListsIndexPage(
                     accent = true,
                 )
             }
-            items(cloudLists, key = { it.name }) { kind ->
+            itemsIndexed(cloudLists, key = { _, it -> it.name }) { idx, kind ->
                 NativeListIndexCard(
                     kind = kind,
                     state = state,
                     installedPkgSet = installedPkgSet,
+                    index = idx,
+                    count = cloudLists.size,
                     onClick = { onSelectKind(kind) },
                 )
             }
@@ -1986,11 +2115,13 @@ private fun NativeListsIndexPage(
                     accent = false,
                 )
             }
-            items(userLists, key = { it.name }) { kind ->
+            itemsIndexed(userLists, key = { _, it -> it.name }) { idx, kind ->
                 NativeListIndexCard(
                     kind = kind,
                     state = state,
                     installedPkgSet = installedPkgSet,
+                    index = idx,
+                    count = userLists.size,
                     onClick = { onSelectKind(kind) },
                 )
             }
@@ -1998,51 +2129,59 @@ private fun NativeListsIndexPage(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun NativeListIndexCard(
     kind: NativeListKind,
     state: BgMasterUiState,
     installedPkgSet: Set<String>,
+    index: Int,
+    count: Int,
     onClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
     val allPkgs = state.snapshot.listOfKind(kind)
     val installedCount = allPkgs.count { it in installedPkgSet }
     val active = state.snapshot.isListActive(kind)
-    ElevatedCard(
-        shape = RoundedCornerShape(20.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = state.snapshot.serverInjected, onClick = onClick),
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(strings.nativeListTitle(kind), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    when {
-                        !state.snapshot.serverInjected -> strings.statusInactive
-                        !active -> strings.installedSummary(installedCount, allPkgs.size) + strings.cloudSwitchOffSuffix
-                        else -> strings.installedSummary(installedCount, allPkgs.size)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (state.snapshot.serverInjected && !active) {
-                StatusPill(text = strings.cloudInactivePill, active = false)
+    SegmentedListItem(
+        onClick = onClick,
+        enabled = state.snapshot.serverInjected,
+        shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
+        colors = ListItemDefaults.segmentedColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.snapshot.serverInjected && !active) {
+                    StatusPill(text = strings.cloudInactivePill, active = false)
+                    Spacer(Modifier.width(6.dp))
+                }
+                StatusPill(text = strings.nativeSourceShort(kind.source), active = kind.source == NativeSource.SYSTEM_USER)
                 Spacer(Modifier.width(6.dp))
+                Icon(Icons.Rounded.ChevronRight, contentDescription = null)
             }
-            StatusPill(text = strings.nativeSourceShort(kind.source), active = kind.source == NativeSource.SYSTEM_USER)
-            Spacer(Modifier.width(6.dp))
-            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
-        }
-    }
+        },
+        supportingContent = {
+            Text(
+                when {
+                    !state.snapshot.serverInjected -> strings.statusInactive
+                    !active -> strings.installedSummary(installedCount, allPkgs.size) + strings.cloudSwitchOffSuffix
+                    else -> strings.installedSummary(installedCount, allPkgs.size)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        content = {
+            Text(
+                strings.nativeListTitle(kind),
+                style = MaterialTheme.typography.titleSmallEmphasized,
+            )
+        },
+    )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun NativeListDetailPage(
     kind: NativeListKind,
@@ -2050,6 +2189,7 @@ private fun NativeListDetailPage(
     onBack: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var search by remember { mutableStateOf("") }
     val appMap = remember(state.apps) {
         state.apps.sortedByDescending { it.userId }.associateBy { it.packageName }
@@ -2070,8 +2210,15 @@ private fun NativeListDetailPage(
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = strings.backCd)
@@ -2079,7 +2226,12 @@ private fun NativeListDetailPage(
                 },
                 title = {
                     Column {
-                        Text(strings.nativeListTitle(kind), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            strings.nativeListTitle(kind),
+                            style = MaterialTheme.typography.titleLargeEmphasized,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         val subText = strings.nativeDetailSubtitle(strings.nativeSourceLabel(kind.source), rawSet.size) +
                             if (!state.snapshot.isListActive(kind)) strings.cloudSwitchOffSuffix else ""
                         Text(
@@ -2097,64 +2249,63 @@ private fun NativeListDetailPage(
                 .padding(padding)
                 .fillMaxSize(),
         ) {
-            OutlinedTextField(
+            Md3eSearchField(
                 value = search,
                 onValueChange = { search = it },
+                placeholder = strings.filterPkgPlaceholder,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                shape = RoundedCornerShape(24.dp),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                placeholder = { Text(strings.filterPkgPlaceholder) },
             )
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
             ) {
-                items(sortedEntries, key = { it }) { pkg ->
+                itemsIndexed(sortedEntries, key = { _, it -> it }) { idx, pkg ->
                     val app = appMap[pkg]
-                    OutlinedCard(shape = RoundedCornerShape(18.dp)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (app != null) {
-                                DrawableIcon(app.icon, modifier = Modifier.size(36.dp))
-                                Spacer(Modifier.width(12.dp))
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = app?.label ?: pkg,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = pkg,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
+                    SegmentedListItem(
+                        shapes = ListItemDefaults.segmentedShapes(index = idx, count = sortedEntries.size),
+                        colors = ListItemDefaults.segmentedColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        ),
+                        leadingContent = if (app != null) {
+                            { DrawableIcon(app.icon, modifier = Modifier.size(36.dp)) }
+                        } else {
+                            null
+                        },
+                        trailingContent = {
                             StatusPill(
                                 text = if (app != null) strings.installed else strings.notInstalled,
                                 active = app != null,
                             )
-                        }
-                    }
+                        },
+                        supportingContent = {
+                            Text(
+                                text = pkg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        content = {
+                            Text(
+                                text = app?.label ?: pkg,
+                                style = MaterialTheme.typography.titleSmallEmphasized,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                    )
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun GlobalToggleRow(
     title: String,
@@ -2165,12 +2316,11 @@ private fun GlobalToggleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 12.dp),
+            .clickable { onCheckedChange(!checked) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(title, style = MaterialTheme.typography.titleSmallEmphasized)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.width(12.dp))
@@ -2179,15 +2329,211 @@ private fun GlobalToggleRow(
 }
 
 @Composable
+internal fun Md3eSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    TextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.fillMaxWidth(),
+        shape = CircleShape,
+        singleLine = true,
+        colors = TextFieldDefaults.colors(
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+        trailingIcon = {
+            if (value.isNotEmpty()) {
+                IconButton(onClick = { onValueChange("") }) {
+                    Icon(Icons.Rounded.Close, contentDescription = null)
+                }
+            }
+        },
+        placeholder = { Text(placeholder) },
+    )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun <T> ConnectedToggleRow(
+    items: List<T>,
+    isSelected: (T) -> Boolean,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    val toggleColors = ToggleButtonDefaults.colors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        checkedContainerColor = MaterialTheme.colorScheme.primary,
+        checkedContentColor = MaterialTheme.colorScheme.onPrimary,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+    ) {
+        items.forEachIndexed { idx, item ->
+            val shapes = when {
+                items.size <= 1 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                idx == 0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                idx == items.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+            }
+            ToggleButton(
+                checked = isSelected(item),
+                onCheckedChange = { onSelect(item) },
+                modifier = Modifier.weight(1f),
+                shapes = shapes,
+                colors = toggleColors,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = label(item),
+                    style = MaterialTheme.typography.labelLargeEmphasized,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BgManagerAboutDialog(onDismiss: () -> Unit) {
+    val strings = LocalAppStrings.current
+    val context = LocalContext.current
+    val appIconBitmap = remember(context) {
+        context.packageManager.getApplicationIcon(context.applicationInfo)
+            .toBitmap(width = 144, height = 144)
+            .asImageBitmap()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(strings.aboutTitle) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Image(
+                        bitmap = appIconBitmap,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.appTitle,
+                            style = MaterialTheme.typography.titleLargeEmphasized,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                text = "v${BuildConfig.VERSION_NAME}",
+                                style = MaterialTheme.typography.labelMediumEmphasized,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
+
+                Card(
+                    shape = MaterialTheme.shapes.large,
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.large)
+                        .combinedClickable(
+                            onClick = {
+                                onDismiss()
+                                openRepoUrl(context, strings.aboutRepoUrl, strings.aboutOpenFailed)
+                            },
+                            onLongClick = {
+                                copyToClipboard(context, "ColorOSBgManager_Repo", strings.aboutRepoUrl)
+                                Toast.makeText(context, strings.aboutLinkCopied, Toast.LENGTH_SHORT).show()
+                            },
+                        ),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp),
+                        ) {
+                            Text(
+                                text = strings.aboutRepoTitle,
+                                style = MaterialTheme.typography.labelLargeEmphasized,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = strings.aboutRepoUrl,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+    )
+}
+
+private fun openRepoUrl(context: Context, url: String, fallbackMsg: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+    val opened = runCatching { context.startActivity(intent) }.isSuccess
+    if (!opened) {
+        copyToClipboard(context, "ColorOSBgManager_Repo", url)
+        Toast.makeText(context, fallbackMsg, Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun copyToClipboard(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
 internal fun StatusPill(text: String, active: Boolean) {
     Surface(
-        shape = RoundedCornerShape(50),
+        shape = CircleShape,
         color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmallEmphasized,
             color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -2206,7 +2552,7 @@ private fun NativeOutlinedBadge(text: String, isErrorBadge: Boolean) {
         MaterialTheme.colorScheme.tertiary
     }
     Surface(
-        shape = RoundedCornerShape(50),
+        shape = CircleShape,
         color = Color.Transparent,
         border = BorderStroke(1.dp, borderColor),
     ) {
@@ -2220,6 +2566,7 @@ private fun NativeOutlinedBadge(text: String, isErrorBadge: Boolean) {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun OverrideFilledBadge(text: String, mode: PolicyMode) {
     val (bg, fg, icon) = when (mode) {
@@ -2239,7 +2586,7 @@ private fun OverrideFilledBadge(text: String, mode: PolicyMode) {
             Icons.Rounded.Close,
         )
     }
-    Surface(shape = RoundedCornerShape(50), color = bg) {
+    Surface(shape = CircleShape, color = bg) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2248,8 +2595,7 @@ private fun OverrideFilledBadge(text: String, mode: PolicyMode) {
             Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(12.dp))
             Text(
                 text = text,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelSmallEmphasized,
                 color = fg,
                 maxLines = 1,
             )
@@ -2257,6 +2603,7 @@ private fun OverrideFilledBadge(text: String, mode: PolicyMode) {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ModeSelectorPill(
     mode: PolicyMode,
@@ -2268,10 +2615,10 @@ private fun ModeSelectorPill(
     when (mode) {
         PolicyMode.FOLLOW_SYSTEM -> {
             Surface(
-                shape = RoundedCornerShape(50),
+                shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.clickable(onClick = onClick),
+                modifier = Modifier.clip(CircleShape).clickable(onClick = onClick),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2294,9 +2641,9 @@ private fun ModeSelectorPill(
         }
         PolicyMode.FORCE_ALLOW -> {
             Surface(
-                shape = RoundedCornerShape(50),
+                shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onClick),
+                modifier = Modifier.clip(CircleShape).clickable(onClick = onClick),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2311,8 +2658,7 @@ private fun ModeSelectorPill(
                     )
                     Text(
                         modeText,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelMediumEmphasized,
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                 }
@@ -2320,9 +2666,9 @@ private fun ModeSelectorPill(
         }
         PolicyMode.FORCE_RESTRICT_HBG -> {
             Surface(
-                shape = RoundedCornerShape(50),
+                shape = CircleShape,
                 color = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.clickable(onClick = onClick),
+                modifier = Modifier.clip(CircleShape).clickable(onClick = onClick),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2337,8 +2683,7 @@ private fun ModeSelectorPill(
                     )
                     Text(
                         modeText,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelMediumEmphasized,
                         color = MaterialTheme.colorScheme.onTertiary,
                     )
                 }
@@ -2346,9 +2691,9 @@ private fun ModeSelectorPill(
         }
         PolicyMode.FORCE_RESTRICT -> {
             Surface(
-                shape = RoundedCornerShape(50),
+                shape = CircleShape,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.clickable(onClick = onClick),
+                modifier = Modifier.clip(CircleShape).clickable(onClick = onClick),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2363,8 +2708,7 @@ private fun ModeSelectorPill(
                     )
                     Text(
                         modeText,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelMediumEmphasized,
                         color = MaterialTheme.colorScheme.onError,
                     )
                 }
@@ -2379,7 +2723,7 @@ internal fun DrawableIcon(drawable: Drawable, modifier: Modifier = Modifier) {
     Image(
         bitmap = bitmap,
         contentDescription = null,
-        modifier = modifier.clip(RoundedCornerShape(12.dp)),
+        modifier = modifier.clip(MaterialTheme.shapes.medium),
     )
 }
 
