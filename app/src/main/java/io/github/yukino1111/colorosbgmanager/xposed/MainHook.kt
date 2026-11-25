@@ -449,22 +449,34 @@ class MainHook : XposedModule() {
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
                 }
             }
-            listOf(
-                "inAndroidFreezeWhiteList",
-                "inAndroidFreezeKillWhiteList",
-            ).forEach { methodName ->
-                runCatching {
-                    hook(dbClass.getDeclaredMethod(methodName, String::class.java, String::class.java)).intercept { chain ->
-                        val pkg = chain.getArg(0) as? String
-                        when (modeForFallback(pkg, BgSubsystem.HANS_FREEZE)) {
-                            PolicyMode.FORCE_ALLOW -> true
-                            PolicyMode.FORCE_RESTRICT,
-                            PolicyMode.FORCE_RESTRICT_HBG -> false
-                            PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                        }
+            runCatching {
+                hook(dbClass.getDeclaredMethod("isSysBlackApp", Int::class.javaPrimitiveType)).intercept { chain ->
+                    val uid = chain.getArg(0) as Int
+                    when {
+                        uidHasMode(uid, BgSubsystem.HANS_FREEZE, PolicyMode.FORCE_ALLOW) -> false
+                        uidHasMode(uid, BgSubsystem.HANS_FREEZE, PolicyMode.FORCE_RESTRICT) ||
+                            uidHasMode(uid, BgSubsystem.HANS_FREEZE, PolicyMode.FORCE_RESTRICT_HBG) -> true
+                        else -> chain.proceed()
                     }
                 }
             }
+            listOf(
+                "inAndroidFreezeWhiteList",
+                "inAndroidFreezeKillWhiteList",
+                "inAndroidFreezeCheckLockWhiteList",
+                "inAsyncBinderFreezeWhiteList",
+                "inUidIdleWhiteList",
+            ).forEach { methodName ->
+                hookPkgBool(dbClass, methodName, String::class.java, String::class.java, sub = BgSubsystem.HANS_FREEZE)
+            }
+            listOf(
+                "inFastFreezeWhiteList",
+                "inSysBlackFgsExempt",
+                "isWhiteAppIfTypeIgnored",
+            ).forEach { methodName ->
+                hookPkgBool(dbClass, methodName, String::class.java, sub = BgSubsystem.HANS_FREEZE)
+            }
+            hookPkgBool(dbClass, "isSysBlackConfigApp", String::class.java, sub = BgSubsystem.HANS_FREEZE, invert = true)
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusHansDBConfig failed", it) }
 
@@ -476,19 +488,26 @@ class MainHook : XposedModule() {
         runCatching {
             val cfgClass = cl.loadClass("com.android.server.am.OplusAppStartupConfig")
             listOf(
-                cfgClass.getDeclaredMethod("isInAutoBootWhiteList", String::class.java, Int::class.javaPrimitiveType),
-                cfgClass.getDeclaredMethod("isInCustomAutoBootWhiteList", String::class.java, Int::class.javaPrimitiveType),
-            ).forEach { m ->
-                hook(m).intercept { chain ->
-                    val pkg = chain.getArg(0) as? String
-                    val userId = chain.getArg(1) as Int
-                    when (modeFor(pkg, userId, BgSubsystem.AUTO_START)) {
-                        PolicyMode.FORCE_ALLOW -> true
-                        PolicyMode.FORCE_RESTRICT,
-                        PolicyMode.FORCE_RESTRICT_HBG -> false
-                        PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                    }
-                }
+                "isInAutoBootWhiteList",
+                "isInCustomAutoBootWhiteList",
+                "isInAutoBootUserWhiteList",
+                "isJobRestrictionWhiteList",
+            ).forEach { methodName ->
+                hookPkgBool(
+                    cfgClass,
+                    methodName,
+                    String::class.java,
+                    Int::class.javaPrimitiveType!!,
+                    sub = BgSubsystem.AUTO_START,
+                    userIdArgIdx = 1,
+                )
+            }
+            listOf(
+                "inAuthScopeAutoStartWhiteList",
+                "isInAppStandbyRestrictWhiteList",
+                "inNotUsedCallerWhiteList",
+            ).forEach { methodName ->
+                hookPkgBool(cfgClass, methodName, String::class.java, sub = BgSubsystem.AUTO_START)
             }
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook AutoStart config failed", it) }
@@ -497,6 +516,7 @@ class MainHook : XposedModule() {
             val mgrClass = cl.loadClass("com.android.server.am.OplusAppStartupManager")
             val amsClass = cl.loadClass("com.android.server.am.ActivityManagerService")
             val prClass = cl.loadClass("com.android.server.am.ProcessRecord")
+            val srClass = cl.loadClass("com.android.server.am.ServiceRecord")
 
             hook(mgrClass.getDeclaredMethod("shouldPreventStartProcess", amsClass, prClass)).intercept { chain ->
                 if (amsInstance == null) amsInstance = chain.getArg(0)
@@ -530,6 +550,60 @@ class MainHook : XposedModule() {
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
                 }
             }
+
+            hookPkgBool(
+                mgrClass,
+                "isInAccountSyncWhiteList",
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                Int::class.javaPrimitiveType!!,
+                sub = BgSubsystem.AUTO_START,
+                userIdArgIdx = 2,
+                restrictEventAction = "block_account_sync",
+            )
+            hookPkgBool(
+                mgrClass,
+                "isJobRestrictionWhiteList",
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                sub = BgSubsystem.AUTO_START,
+                userIdArgIdx = 1,
+            )
+            hookPkgBool(mgrClass, "inProtectWhiteList", String::class.java, sub = BgSubsystem.AUTO_START)
+
+            runCatching {
+                hook(mgrClass.getDeclaredMethod("isAllowRestartService", prClass)).intercept { chain ->
+                    val pr = chain.getArg(0)
+                    val pkg = extractProcessRecordPkg(pr)
+                    val userId = extractProcessRecordUserId(pr)
+                    val autoMode = modeFor(pkg, userId, BgSubsystem.AUTO_START)
+                    val assocMode = modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
+                    when {
+                        autoMode.isRestrict || assocMode.isRestrict -> {
+                            val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
+                            recordEvent(pkg, sub, "block_restart_proc", "isAllowRestartService", userId)
+                            false
+                        }
+                        autoMode == PolicyMode.FORCE_ALLOW -> true
+                        else -> chain.proceed()
+                    }
+                }
+            }
+            runCatching {
+                hook(mgrClass.getDeclaredMethod("handleServiceRestartReschedule", srClass, Handler::class.java)).intercept { chain ->
+                    val sr = chain.getArg(0)
+                    val pkg = extractServiceRecordPkg(sr)
+                    val userId = extractServiceRecordUserId(sr)
+                    val autoMode = modeFor(pkg, userId, BgSubsystem.AUTO_START)
+                    val assocMode = modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
+                    if (autoMode.isRestrict || assocMode.isRestrict) {
+                        val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
+                        recordEvent(pkg, sub, "block_restart_reschedule", "ServiceRecord", userId)
+                        return@intercept false
+                    }
+                    chain.proceed()
+                }
+            }
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusAppStartupManager process hooks failed", it) }
 
@@ -560,20 +634,20 @@ class MainHook : XposedModule() {
         runCatching {
             val cfgClass = cl.loadClass("com.android.server.am.OplusAppStartupConfig")
             listOf(
-                cfgClass.getDeclaredMethod("inAssociateStartWhiteList", String::class.java, Int::class.javaPrimitiveType),
-                cfgClass.getDeclaredMethod("inCustomAssociateStartWhiteList", String::class.java, Int::class.javaPrimitiveType),
-            ).forEach { m ->
-                hook(m).intercept { chain ->
-                    val pkg = chain.getArg(0) as? String
-                    val userId = chain.getArg(1) as Int
-                    when (modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)) {
-                        PolicyMode.FORCE_ALLOW -> true
-                        PolicyMode.FORCE_RESTRICT,
-                        PolicyMode.FORCE_RESTRICT_HBG -> false
-                        PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                    }
-                }
+                "inAssociateStartWhiteList",
+                "inCustomAssociateStartWhiteList",
+                "inAssociateStartUserWhiteList",
+            ).forEach { methodName ->
+                hookPkgBool(
+                    cfgClass,
+                    methodName,
+                    String::class.java,
+                    Int::class.javaPrimitiveType!!,
+                    sub = BgSubsystem.ASSOCIATE_START,
+                    userIdArgIdx = 1,
+                )
             }
+            hookPkgBool(cfgClass, "inAuthScopeAssStartWhiteList", String::class.java, sub = BgSubsystem.ASSOCIATE_START)
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusAppStartupConfig associate failed", it) }
 
@@ -654,19 +728,27 @@ class MainHook : XposedModule() {
                 val br = chain.getArg(1)
                 val ri = chain.getArg(2) as? ResolveInfo
                 val bf = chain.getArg(3)
-                val resolvePkg = ri?.activityInfo?.packageName
-                val filterPkg = extractBroadcastFilterPkg(bf)
                 val argPkg = chain.getArg(4) as? String
-                val targetPkg = resolvePkg ?: filterPkg ?: argPkg
-                val userId = extractReceiverUserId(ri, bf, br)
-                when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
-                    PolicyMode.FORCE_ALLOW -> false
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> {
-                        recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_receiver", "broadcast", userId)
-                        true
-                    }
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
+                resolvePreventReceiverDecision(br, ri, bf, argPkg)?.let { return@intercept it }
+                chain.proceed()
+            }
+
+            runCatching {
+                hook(
+                    mgrClass.getDeclaredMethod(
+                        "shouldPreventSendReceiverReal",
+                        brClass,
+                        ResolveInfo::class.java,
+                        bfClass,
+                        String::class.java,
+                    )
+                ).intercept { chain ->
+                    val br = chain.getArg(0)
+                    val ri = chain.getArg(1) as? ResolveInfo
+                    val bf = chain.getArg(2)
+                    val argPkg = chain.getArg(3) as? String
+                    resolvePreventReceiverDecision(br, ri, bf, argPkg)?.let { return@intercept it }
+                    chain.proceed()
                 }
             }
 
@@ -719,6 +801,24 @@ class MainHook : XposedModule() {
                     chain.proceed()
                 }
             }
+            runCatching {
+                val m = policyClass.getDeclaredMethod(
+                    "tryKillAbnormalAudioApp",
+                    Int::class.javaPrimitiveType,
+                    String::class.java,
+                    String::class.java,
+                )
+                hook(m).intercept { chain ->
+                    val uid = chain.getArg(0) as Int
+                    val userId = MultiUserPackageHelper.userIdOfUid(uid)
+                    val pkg = chain.getArg(1) as? String
+                    if (modeFor(pkg, userId, BgSubsystem.BATTERY_DOZE) == PolicyMode.FORCE_ALLOW) {
+                        recordEvent(pkg, BgSubsystem.BATTERY_DOZE, "skip_oguard", m.name, userId)
+                        return@intercept false
+                    }
+                    chain.proceed()
+                }
+            }
             hook(
                 policyClass.getDeclaredMethod(
                     "requestKillApp",
@@ -742,17 +842,41 @@ class MainHook : XposedModule() {
 
         runCatching {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
-            hook(dbClass.getDeclaredMethod("isActiveUpdateDozeWhiteList", String::class.java)).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                when (modeForFallback(pkg, BgSubsystem.BATTERY_DOZE)) {
-                    PolicyMode.FORCE_ALLOW -> true
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                }
-            }
+            hookPkgBool(dbClass, "isActiveUpdateDozeWhiteList", String::class.java, sub = BgSubsystem.BATTERY_DOZE)
+            hookPkgBool(
+                dbClass,
+                "isInAlarmWhiteList",
+                String::class.java,
+                String::class.java,
+                Boolean::class.javaPrimitiveType!!,
+                sub = BgSubsystem.BATTERY_DOZE,
+            )
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook Doze whitelist in OplusHansDBConfig failed", it) }
+
+        runCatching {
+            val oguardDbClass = cl.loadClass("com.android.server.hans.oguard.OGuardDBConfig")
+            hookPkgBool(
+                oguardDbClass,
+                "inThirdAppWhiteList",
+                String::class.java,
+                Int::class.javaObjectType,
+                sub = BgSubsystem.BATTERY_DOZE,
+            )
+            hookPkgBool(
+                oguardDbClass,
+                "inThirdAppBlackList",
+                String::class.java,
+                Int::class.javaObjectType,
+                sub = BgSubsystem.BATTERY_DOZE,
+                invert = true,
+            )
+            hookPkgBool(oguardDbClass, "isSpecApp", String::class.java, sub = BgSubsystem.BATTERY_DOZE)
+            hookPkgBool(oguardDbClass, "isSpecBlackApp", String::class.java, sub = BgSubsystem.BATTERY_DOZE, invert = true)
+            hookPkgBool(oguardDbClass, "isInGlobalBlackAppList", String::class.java, sub = BgSubsystem.BATTERY_DOZE, invert = true)
+            hookPkgBool(oguardDbClass, "isHighAuthorityPkg", String::class.java, sub = BgSubsystem.BATTERY_DOZE)
+            anyOk = true
+        }.onFailure { log(Log.ERROR, TAG, "Hook OGuardDBConfig failed", it) }
 
         runCatching {
             val idleClass = cl.loadClass("com.android.server.DeviceIdleController")
@@ -978,6 +1102,23 @@ class MainHook : XposedModule() {
                 }
                 chain.proceed()
             }
+            hookPkgBool(
+                athenaClass,
+                "isAuthScopeProtectProc",
+                String::class.java,
+                String::class.java,
+                sub = BgSubsystem.ATHENA_RECENT,
+            )
+            hookPkgBool(
+                athenaClass,
+                "isShouldForbidRestartForClear",
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                sub = BgSubsystem.ATHENA_RECENT,
+                invert = true,
+                userIdArgIdx = 1,
+                restrictEventAction = "forbid_clear_restart",
+            )
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusAthenaAmManager failed", it) }
 
@@ -1107,19 +1248,32 @@ class MainHook : XposedModule() {
 
         runCatching {
             val listMgrClass = cl.loadClass("com.android.server.OplusListManagerImpl")
-            hook(listMgrClass.getDeclaredMethod("getRemoveTaskFilterPkgList", Context::class.java)).intercept { chain ->
-                val raw = chain.proceed() as? List<*> ?: return@intercept null
-                val filtered = ArrayList<String>(raw.size)
-                for (item in raw) {
-                    val pkg = item as? String ?: continue
-                    if (!modeFor(pkg, 0, BgSubsystem.ATHENA_RECENT).isRestrict) {
-                        filtered.add(pkg)
-                    }
-                }
-                filtered
+            listOf(
+                "getRemoveTaskFilterPkgList" to arrayOf<Class<*>>(Context::class.java),
+                "getRemoveTaskFilterProcessList" to arrayOf<Class<*>>(Context::class.java),
+                "getKillRestartServicePkgList" to arrayOf<Class<*>>(Context::class.java),
+                "getQuickRestartProcList" to emptyArray(),
+                "getKeepAliveList" to arrayOf<Class<*>>(String::class.java),
+                "getAmsEmptyKillFilterList" to emptyArray(),
+                "getAmsEmptyKillBootUpFilterList" to emptyArray(),
+                "getProtectSelfWhiteList" to emptyArray(),
+                "getCustomWhiteList" to emptyArray(),
+                "getCustomDynamicWhiteList" to emptyArray(),
+                "getGlobalWhiteList" to arrayOf<Class<*>>(Context::class.java),
+                "getGlobalWhiteList" to arrayOf<Class<*>>(Context::class.java, Int::class.javaPrimitiveType!!),
+                "getGlobalProcessWhiteList" to arrayOf<Class<*>>(Context::class.java),
+                "getStageProtectList" to emptyArray(),
+                "getStageProtectList" to arrayOf<Class<*>>(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!),
+                "getStageProtectListAsUser" to arrayOf<Class<*>>(
+                    Int::class.javaPrimitiveType!!,
+                    Int::class.javaPrimitiveType!!,
+                    Int::class.javaPrimitiveType!!,
+                ),
+            ).forEach { (methodName, params) ->
+                hookFilterPkgCollection(listMgrClass, methodName, *params, sub = BgSubsystem.ATHENA_RECENT)
             }
             anyOk = true
-        }.onFailure { log(Log.ERROR, TAG, "Hook OplusListManagerImpl.getRemoveTaskFilterPkgList failed", it) }
+        }.onFailure { log(Log.ERROR, TAG, "Hook OplusListManagerImpl Athena lists failed", it) }
 
         runCatching {
             val supervisorClass = cl.loadClass("com.android.server.wm.ActivityTaskSupervisor")
@@ -1178,17 +1332,24 @@ class MainHook : XposedModule() {
 
         runCatching {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
-            hook(dbClass.getDeclaredMethod("isTrimMemWhitePkg", String::class.java)).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                when (modeForFallback(pkg, BgSubsystem.ATHENA_RECENT)) {
-                    PolicyMode.FORCE_ALLOW -> true
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                }
-            }
+            hookPkgBool(dbClass, "isTrimMemWhitePkg", String::class.java, sub = BgSubsystem.ATHENA_RECENT)
+            hookPkgBool(dbClass, "inThermalKeepAliveImpPkgList", String::class.java, sub = BgSubsystem.ATHENA_RECENT)
+            hookPkgBool(dbClass, "isInRecentAppBlackList", String::class.java, sub = BgSubsystem.ATHENA_RECENT, invert = true)
             anyOk = true
-        }.onFailure { log(Log.ERROR, TAG, "Hook isTrimMemWhitePkg failed", it) }
+        }.onFailure { log(Log.ERROR, TAG, "Hook Athena OplusHansDBConfig failed", it) }
+
+        runCatching {
+            val oguardDbClass = cl.loadClass("com.android.server.hans.oguard.OGuardDBConfig")
+            hookPkgBool(
+                oguardDbClass,
+                "isInRecentLockAppList",
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                sub = BgSubsystem.ATHENA_RECENT,
+                userIdArgIdx = 1,
+            )
+            anyOk = true
+        }.onFailure { log(Log.ERROR, TAG, "Hook OGuardDBConfig recent lock failed", it) }
 
         return anyOk
     }
@@ -1286,15 +1447,9 @@ class MainHook : XposedModule() {
 
         runCatching {
             val dbClass = cl.loadClass("com.android.server.hans.OplusHansDBConfig")
-            hook(dbClass.getDeclaredMethod("isInCpuCtlWhiteList", String::class.java)).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                when (modeForFallback(pkg, BgSubsystem.CPU_LIMIT)) {
-                    PolicyMode.FORCE_ALLOW -> true
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                }
-            }
+            hookPkgBool(dbClass, "isInCpuCtlWhiteList", String::class.java, sub = BgSubsystem.CPU_LIMIT)
+            hookPkgBool(dbClass, "isInCpuHighLoadFreezeEnableWhiteList", String::class.java, sub = BgSubsystem.CPU_LIMIT)
+            hookPkgBool(dbClass, "isInCpuHighLoadSceneEnableWhiteList", String::class.java, sub = BgSubsystem.CPU_LIMIT)
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusHansDBConfig isInCpuCtlWhiteList failed", it) }
 
@@ -1316,15 +1471,9 @@ class MainHook : XposedModule() {
                     PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
                 }
             }
-            hook(dbClass.getDeclaredMethod("isTrafficWhitePkg", String::class.java)).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                when (modeForFallback(pkg, BgSubsystem.DOZE_NET)) {
-                    PolicyMode.FORCE_ALLOW -> true
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                }
-            }
+            hookPkgBool(dbClass, "isTrafficWhitePkg", String::class.java, sub = BgSubsystem.DOZE_NET)
+            hookPkgBool(dbClass, "isInTcpRetransmissionWhitePkgList", String::class.java, sub = BgSubsystem.DOZE_NET)
+            hookPkgBool(dbClass, "isInTcpRetransmissionBlackPkgList", String::class.java, sub = BgSubsystem.DOZE_NET, invert = true)
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusHansDBConfig Doze net failed", it) }
 
@@ -1348,17 +1497,40 @@ class MainHook : XposedModule() {
         var anyOk = false
         runCatching {
             val startupCfgClass = cl.loadClass("com.android.server.am.OplusAppStartupConfig")
-            hook(startupCfgClass.getDeclaredMethod("isInBroadcastRestrictionWhiteList", String::class.java, String::class.java)).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                when (modeForFallback(pkg, BgSubsystem.BROADCAST_RESTRICT)) {
-                    PolicyMode.FORCE_ALLOW -> true
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
-                }
-            }
+            hookPkgBool(
+                startupCfgClass,
+                "isInBroadcastRestrictionWhiteList",
+                String::class.java,
+                String::class.java,
+                sub = BgSubsystem.BROADCAST_RESTRICT,
+            )
+            hookPkgBool(
+                startupCfgClass,
+                "isBrOptWhitelist",
+                String::class.java,
+                String::class.java,
+                sub = BgSubsystem.BROADCAST_RESTRICT,
+            )
+            hookPkgBool(
+                startupCfgClass,
+                "isInRestrictStickyBroadcastWhiteList",
+                String::class.java,
+                sub = BgSubsystem.BROADCAST_RESTRICT,
+            )
+            hookPkgBool(
+                startupCfgClass,
+                "isInSpecificBroadcastWhiteList",
+                String::class.java,
+                sub = BgSubsystem.BROADCAST_RESTRICT,
+            )
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook isInBroadcastRestrictionWhiteList failed", it) }
+
+        runCatching {
+            val listMgrClass = cl.loadClass("com.android.server.OplusListManagerImpl")
+            hookPkgBool(listMgrClass, "isSkipBroadcastFlagRestricted", String::class.java, sub = BgSubsystem.BROADCAST_RESTRICT)
+            anyOk = true
+        }.onFailure { log(Log.ERROR, TAG, "Hook OplusListManagerImpl broadcast failed", it) }
 
         runCatching {
             val restrictionBaseClass = cl.loadClass("com.android.server.am.OplusBroadcastRestriction\$Restriction")
@@ -1903,6 +2075,99 @@ class MainHook : XposedModule() {
         if (globalFlags.verboseLog) {
             log(Log.INFO, TAG, "Event: u$userId/$pkg [${sub.key}] $action $detail")
         }
+    }
+
+    private fun resolvePreventReceiverDecision(
+        br: Any?,
+        ri: ResolveInfo?,
+        bf: Any?,
+        argPkg: String?,
+    ): Boolean? {
+        val resolvePkg = ri?.activityInfo?.packageName
+        val filterPkg = extractBroadcastFilterPkg(bf)
+        val targetPkg = resolvePkg ?: filterPkg ?: argPkg
+        val userId = extractReceiverUserId(ri, bf, br)
+        return when (modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
+            PolicyMode.FORCE_ALLOW -> false
+            PolicyMode.FORCE_RESTRICT,
+            PolicyMode.FORCE_RESTRICT_HBG -> {
+                recordEvent(targetPkg, BgSubsystem.ASSOCIATE_START, "prevent_receiver", "broadcast", userId)
+                true
+            }
+            PolicyMode.FOLLOW_SYSTEM -> null
+        }
+    }
+
+    private fun hookPkgBool(
+        clazz: Class<*>,
+        methodName: String,
+        vararg paramTypes: Class<*>,
+        sub: BgSubsystem,
+        invert: Boolean = false,
+        pkgArgIdx: Int = 0,
+        userIdArgIdx: Int? = null,
+        restrictEventAction: String? = null,
+    ) {
+        runCatching {
+            hook(clazz.getDeclaredMethod(methodName, *paramTypes)).intercept { chain ->
+                val pkg = chain.getArg(pkgArgIdx) as? String
+                val userId = userIdArgIdx?.let { chain.getArg(it) as? Int }
+                val mode = if (userId != null) modeFor(pkg, userId, sub) else modeForFallback(pkg, sub)
+                when (mode) {
+                    PolicyMode.FORCE_ALLOW -> !invert
+                    PolicyMode.FORCE_RESTRICT,
+                    PolicyMode.FORCE_RESTRICT_HBG -> {
+                        if (restrictEventAction != null) {
+                            recordEvent(pkg, sub, restrictEventAction, methodName, userId ?: 0)
+                        }
+                        invert
+                    }
+                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
+                }
+            }
+        }
+    }
+
+    private fun hookFilterPkgCollection(
+        clazz: Class<*>,
+        methodName: String,
+        vararg paramTypes: Class<*>,
+        sub: BgSubsystem,
+    ) {
+        runCatching {
+            hook(clazz.getDeclaredMethod(methodName, *paramTypes)).intercept { chain ->
+                val raw = chain.proceed()
+                when (raw) {
+                    is List<*> -> {
+                        val filtered = ArrayList<Any?>(raw.size)
+                        for (item in raw) {
+                            val pkg = extractListEntryPkg(item)
+                            if (pkg == null || !modeForFallback(pkg, sub).isRestrict) {
+                                filtered.add(item)
+                            }
+                        }
+                        filtered
+                    }
+                    is Set<*> -> {
+                        val filtered = android.util.ArraySet<Any?>()
+                        for (item in raw) {
+                            val pkg = extractListEntryPkg(item)
+                            if (pkg == null || !modeForFallback(pkg, sub).isRestrict) {
+                                filtered.add(item)
+                            }
+                        }
+                        filtered
+                    }
+                    else -> raw
+                }
+            }
+        }
+    }
+
+    private fun extractListEntryPkg(item: Any?): String? {
+        val raw = (item as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val pkg = raw.substringBefore('@').substringBefore('#').substringBefore(':')
+        return pkg.takeIf { it.contains('.') }
     }
 
     private fun findDeclaredField(clazz: Class<*>, name: String): Field? {

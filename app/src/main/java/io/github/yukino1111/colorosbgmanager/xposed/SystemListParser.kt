@@ -18,11 +18,34 @@ internal object SystemListParser {
         systemClassLoader: ClassLoader? = null,
         systemContext: Context? = null,
     ): Bundle {
-        val elsaLists = parseElsaConfig("/data/oplus/os/bpm/sys_elsa_config_list.xml")
+        val romUpdateFilters = queryRomUpdateFilters(
+            context = systemContext,
+            filterNames = setOf(
+                "sys_guardelf_limitbkg_blacklist",
+                "sys_guardelf_config_list",
+                "sys_elsa_config_list",
+                "sys_appfrozen_config_list",
+                "sys_startup_v3_config_list",
+                "sys_res_control_config",
+                "sys_deviceidle_whitelist",
+                "sys_clear_appfilter_list",
+                "sys_custom_clear_config",
+                "sys_athena_config_list",
+                "sys_ams_skipbroadcast",
+                "sys_cpulimit_config",
+            ),
+        )
+
+        val localElsa = parseElsaConfig("/data/oplus/os/bpm/sys_elsa_config_list.xml")
+        val cloudElsa = romUpdateFilters["sys_elsa_config_list"]?.let(::parseElsaConfigString)
+        val elsaLists = mergeElsaResults(localElsa, cloudElsa)
+        val appFrozenNoFreeze = romUpdateFilters["sys_appfrozen_config_list"]
+            ?.let { parseTextTagXmlString(it, setOf("no_frozen")) }
+            .orEmpty()
         val bpmAll = parseAttTagXml("/data/oplus/os/bpm/bpm.xml", setOf("p"), "att")
         val fixedRecordUser = parseFixedRecord("/data/oplus/os/bpm/fixedRecord.xml")
         val hansUserWhite = fixedRecordUser + (bpmAll - elsaLists.white)
-        val hansSystemWhite = elsaLists.white + (bpmAll - hansUserWhite)
+        val hansSystemWhite = elsaLists.white + appFrozenNoFreeze + (bpmAll - hansUserWhite)
 
         val notRestrictAll = parseAttTagXml("/data/oplus/os/battery/not_restrict.xml", setOf("p"), "att")
         val notifyPresetTemplate = parseAttTagXml("/data/oplus/os/battery/notify_whitelist.xml", setOf("p"), "att")
@@ -30,12 +53,18 @@ internal object SystemListParser {
         val batteryUserWhite = allowProhibitUser + (notRestrictAll - notifyPresetTemplate)
 
         val dozeWhite = parseTextTagXml("/data/oplus/os/battery/doze_wl_local.xml", setOf("wl")) +
+            romUpdateFilters["sys_deviceidle_whitelist"]?.let { parseTextTagXmlString(it, setOf("wl")) }.orEmpty() +
             parseTextTagXml("/data/system/deviceidle.xml", setOf("wl")) +
             (notRestrictAll - batteryUserWhite)
 
-        val startupV3 = parseStartupV3("/data/oplus/os/startup/sys_startup_v3_config_list.xml")
+        val startupV3 = mergeStartupV3Results(
+            parseStartupV3("/data/oplus/os/startup/sys_startup_v3_config_list.xml"),
+            romUpdateFilters["sys_startup_v3_config_list"]?.let(::parseStartupV3String),
+        )
         val customStartupV3 = parseStartupV3("/data/oplus/os/startup/sys_custom_startup_v3_config_list.xml")
         val startupDynamic = parseStartupDynamic("/data/oplus/os/startup/startup_dynamic_list.xml")
+        val appRevivalPkgs = parseAppRevival("/data/oplus/os/startup/sys_res_control_config.xml") +
+            romUpdateFilters["sys_res_control_config"]?.let(::parseAppRevivalString).orEmpty()
 
         val autostartUserWhite = startupDynamic.autostartUserAllow
         val autostartSystemWhite = (
@@ -51,12 +80,8 @@ internal object SystemListParser {
                 customStartupV3.associate +
                 parseLineList("/data/oplus/os/startup/associate_white_list.txt") +
                 startupDynamic.associateSystemAllow
-            ) - startupDynamic.associateDeny - associateUserWhite
+            ) - startupDynamic.associateDeny - associateUserWhite + appRevivalPkgs
 
-        val romUpdateFilters = queryRomUpdateFilters(
-            context = systemContext,
-            filterNames = setOf("sys_guardelf_limitbkg_blacklist", "sys_guardelf_config_list"),
-        )
         val guardElfLimitBlack = romUpdateFilters["sys_guardelf_limitbkg_blacklist"]
             ?.let { parseGuardElfLimitBlack(it) }
             ?: GuardElfBlackResult(emptySet(), true)
@@ -73,17 +98,32 @@ internal object SystemListParser {
         val recentForbid = parseFlexiblePkgXml("/data/oplus/os/recenttask/forbid_lock_apps.xml") +
             readLauncherForbidLockList(systemContext)
 
-        val cpuLimitConfig = parseCpuLimitConfig("/data/oplus/os/bpm/sys_cpulimit_config.xml")
+        val clearFilterWhite = romUpdateFilters["sys_clear_appfilter_list"]
+            ?.let(::parseClearAppFilterWhite)
+            .orEmpty()
+        val customClearExWhite = romUpdateFilters["sys_custom_clear_config"]
+            ?.let(::parseCustomClearItgsaWhite)
+            .orEmpty()
+        val athenaSceneWhite = romUpdateFilters["sys_athena_config_list"]
+            ?.let(::parseAthenaSceneWhite)
+            .orEmpty()
+        val athenaTrimWhite = elsaLists.trimMemWhite + clearFilterWhite + customClearExWhite + athenaSceneWhite
+
+        val cpuLimitConfig = mergeCpuLimitResults(
+            parseCpuLimitConfig("/data/oplus/os/bpm/sys_cpulimit_config.xml"),
+            romUpdateFilters["sys_cpulimit_config"]?.let(::parseCpuLimitConfigString),
+        )
         val skipBroadcastWhite = parseTextTagXml("/data/oplus/os/config/sys_ams_skipbroadcast.xml", setOf("wl")) +
             parseTextTagXml("/data/oplus/os/sys_ams_skipbroadcast.xml", setOf("wl")) +
+            romUpdateFilters["sys_ams_skipbroadcast"]?.let { parseTextTagXmlString(it, setOf("wl")) }.orEmpty() +
             parseTextTagXml("/system_ext/oplus/startup_config.xml", setOf("skipBroadcastWhite"))
 
         val effectiveCpuWhite = if (cpuLimitConfig.particularEnable) cpuLimitConfig.particular else emptySet()
-        val cpuLimitWhite = cpuLimitConfig.particular
+        val cpuLimitWhite = cpuLimitConfig.particular + elsaLists.cpuCtlWhite
         val cpuLimitVipHbg = cpuLimitConfig.vipHbg - effectiveCpuWhite
         val effectiveCpuVipHbg = if (cpuLimitConfig.vipHbgEnable) cpuLimitVipHbg else emptySet()
-        val cpuLimitBlack = cpuLimitConfig.black - effectiveCpuWhite - effectiveCpuVipHbg
-        val dozeNetWhite = guardElfCloud.netWhite
+        val cpuLimitBlack = cpuLimitConfig.black - effectiveCpuWhite - effectiveCpuVipHbg - elsaLists.cpuCtlWhite
+        val dozeNetWhite = guardElfCloud.netWhite + elsaLists.trafficWhite
 
         val netDeepSleepLocal = parseFlexiblePkgXml("/data/oplus/os/battery/app_traffic_deepsleep.xml") +
             parseFlexiblePkgXml("/data/oplus/os/battery/screenoff_restrict.xml") +
@@ -103,7 +143,7 @@ internal object SystemListParser {
             NativeListKind.DOZE_WHITE to dozeWhite,
             NativeListKind.GUARDELF_LIMIT_BLACK to guardElfLimitBlack.pkgs,
             NativeListKind.RECENT_LOCKED to recentLocked,
-            NativeListKind.ATHENA_TRIM_WHITE to elsaLists.trimMemWhite,
+            NativeListKind.ATHENA_TRIM_WHITE to athenaTrimWhite,
             NativeListKind.RECENT_FORBID to recentForbid,
             NativeListKind.CPULIMIT_WHITE to cpuLimitWhite,
             NativeListKind.CPULIMIT_VIP_HBG to cpuLimitVipHbg,
@@ -150,6 +190,35 @@ internal object SystemListParser {
     )
 
     private fun parseElsaConfig(path: String): ElsaResult {
+        var result = ElsaResult(emptySet(), emptySet(), emptySet(), emptySet(), emptySet())
+        withXmlParser(path) { parser ->
+            result = parseElsaConfigFromParser(parser)
+        }
+        return result
+    }
+
+    private fun parseElsaConfigString(xmlContent: String): ElsaResult {
+        var result = ElsaResult(emptySet(), emptySet(), emptySet(), emptySet(), emptySet())
+        withXmlStringParser(xmlContent) { parser ->
+            result = parseElsaConfigFromParser(parser)
+        }
+        return result
+    }
+
+    private fun mergeElsaResults(local: ElsaResult, cloud: ElsaResult?): ElsaResult {
+        if (cloud == null) return local
+        return ElsaResult(
+            white = local.white + cloud.white,
+            black = local.black + cloud.black,
+            cpuCtlWhite = local.cpuCtlWhite + cloud.cpuCtlWhite,
+            trafficWhite = local.trafficWhite + cloud.trafficWhite,
+            trimMemWhite = local.trimMemWhite + cloud.trimMemWhite,
+            hansEnable = cloud.hansEnable && local.hansEnable,
+            trimMemEnable = cloud.trimMemEnable && local.trimMemEnable,
+        )
+    }
+
+    private fun parseElsaConfigFromParser(parser: XmlPullParser): ElsaResult {
         val white = LinkedHashSet<String>()
         val black = LinkedHashSet<String>()
         val cpuCtlWhite = LinkedHashSet<String>()
@@ -157,67 +226,78 @@ internal object SystemListParser {
         val trimMemWhite = LinkedHashSet<String>()
         var hansEnable = true
         var trimMemEnable = true
-        withXmlParser(path) { parser ->
-            var inAndroidFreeze = false
-            var androidFreezeWhiteActive = false
-            var inTrafficWhite = false
-            var event = parser.eventType
-            while (event != XmlPullParser.END_DOCUMENT) {
-                when (event) {
-                    XmlPullParser.START_TAG -> when (parser.name) {
-                        "enableConfig" -> {
-                            hansEnable = parser.getAttributeValue(null, "hansEnable")?.equals("false", true) != true
-                            trimMemEnable = parser.getAttributeValue(null, "MStateTrimMemConfig")?.equals("false", true) != true
+        var inAndroidFreeze = false
+        var androidFreezeWhiteActive = false
+        var inTrafficWhite = false
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "enableConfig" -> {
+                        hansEnable = parser.getAttributeValue(null, "hansEnable")?.equals("false", true) != true
+                        trimMemEnable = parser.getAttributeValue(null, "MStateTrimMemConfig")?.equals("false", true) != true
+                    }
+                    "whitePkg" -> {
+                        val pkg = normalizePackageName(parser.getAttributeValue(null, "name"))
+                        if (pkg != null) {
+                            if (inTrafficWhite) trafficWhite.add(pkg) else white.add(pkg)
                         }
-                        "whitePkg" -> {
-                            val pkg = normalizePackageName(parser.getAttributeValue(null, "name"))
-                            if (pkg != null) {
-                                if (inTrafficWhite) trafficWhite.add(pkg) else white.add(pkg)
+                    }
+                    "imPkg" -> normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(white::add)
+                    "gms", "default-input-pkg" -> normalizePackageName(parser.getAttributeValue(null, "name"))?.let(white::add)
+                    "pkgConfig" -> {
+                        val cat = parser.getAttributeValue(null, "category")?.trim()?.toIntOrNull(16) ?: 0
+                        val names = parser.getAttributeValue(null, "name").orEmpty()
+                        names.split('#', ',').forEach { token ->
+                            val pkg = normalizePackageName(token) ?: return@forEach
+                            if ((cat and 0x1) != 0) trafficWhite.add(pkg)
+                            if ((cat and 0x2) != 0) {
+                                white.add(pkg)
+                                trimMemWhite.add(pkg)
                             }
+                            if ((cat and 0x100) != 0) white.add(pkg)
                         }
-                        "imPkg" -> normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(white::add)
-                        "gms", "default-input-pkg" -> normalizePackageName(parser.getAttributeValue(null, "name"))?.let(white::add)
-                        "android-freeze" -> {
-                            inAndroidFreeze = true
-                            val freezeEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
-                            val whiteEnable = parser.getAttributeValue(null, "whiteEnable")?.equals("false", true) != true
-                            androidFreezeWhiteActive = freezeEnable && whiteEnable
-                        }
-                        "white" -> if (inAndroidFreeze && androidFreezeWhiteActive) {
-                            normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(white::add)
-                        }
-                        "SysBlack", "SysBlackApp" -> normalizePackageName(parser.getAttributeValue(null, "name"))?.let(black::add)
-                        "blackHansPkg" -> {
-                            if (parser.getAttributeValue(null, "enable")?.equals("false", true) != true) {
-                                parser.getAttributeValue(null, "pkg").orEmpty().split('#', ',').forEach { token ->
-                                    normalizePackageName(token)?.let(black::add)
-                                }
-                            }
-                        }
-                        "cpuCtlWhiteList" -> normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(cpuCtlWhite::add)
-                        "trafficWhite" -> inTrafficWhite = true
-                        "pkg", "item" -> if (inTrafficWhite) {
-                            val attrPkg = parser.getAttributeValue(null, "pkg")
-                                ?: parser.getAttributeValue(null, "name")
-                            normalizePackageName(attrPkg)?.let(trafficWhite::add)
-                        }
-                        "trimMemWhiteConfig" -> {
-                            val raw = parser.getAttributeValue(null, "whitePkg").orEmpty()
-                            raw.split('#', ',').forEach { token ->
-                                normalizePackageName(token)?.let(trimMemWhite::add)
+                    }
+                    "android-freeze" -> {
+                        inAndroidFreeze = true
+                        val freezeEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
+                        val whiteEnable = parser.getAttributeValue(null, "whiteEnable")?.equals("false", true) != true
+                        androidFreezeWhiteActive = freezeEnable && whiteEnable
+                    }
+                    "white" -> if (inAndroidFreeze && androidFreezeWhiteActive) {
+                        normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(white::add)
+                    }
+                    "SysBlack", "SysBlackApp" -> normalizePackageName(parser.getAttributeValue(null, "name"))?.let(black::add)
+                    "blackHansPkg" -> {
+                        if (parser.getAttributeValue(null, "enable")?.equals("false", true) != true) {
+                            parser.getAttributeValue(null, "pkg").orEmpty().split('#', ',').forEach { token ->
+                                normalizePackageName(token)?.let(black::add)
                             }
                         }
                     }
-                    XmlPullParser.END_TAG -> when (parser.name) {
-                        "android-freeze" -> {
-                            inAndroidFreeze = false
-                            androidFreezeWhiteActive = false
+                    "cpuCtlWhiteList" -> normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(cpuCtlWhite::add)
+                    "trafficWhite" -> inTrafficWhite = true
+                    "pkg", "item" -> if (inTrafficWhite) {
+                        val attrPkg = parser.getAttributeValue(null, "pkg")
+                            ?: parser.getAttributeValue(null, "name")
+                        normalizePackageName(attrPkg)?.let(trafficWhite::add)
+                    }
+                    "trimMemWhiteConfig" -> {
+                        val raw = parser.getAttributeValue(null, "whitePkg").orEmpty()
+                        raw.split('#', ',').forEach { token ->
+                            normalizePackageName(token)?.let(trimMemWhite::add)
                         }
-                        "trafficWhite" -> inTrafficWhite = false
                     }
                 }
-                event = parser.next()
+                XmlPullParser.END_TAG -> when (parser.name) {
+                    "android-freeze" -> {
+                        inAndroidFreeze = false
+                        androidFreezeWhiteActive = false
+                    }
+                    "trafficWhite" -> inTrafficWhite = false
+                }
             }
+            event = parser.next()
         }
         return ElsaResult(white, black, cpuCtlWhite, trafficWhite, trimMemWhite, hansEnable, trimMemEnable)
     }
@@ -242,55 +322,54 @@ internal object SystemListParser {
     private fun parseAttTagXml(path: String, tags: Set<String>, attr: String): Set<String> {
         val out = LinkedHashSet<String>()
         withXmlParser(path) { parser ->
-            parseAttTagXmlFromParser(parser, tags, attr, out)
-        }
-        return out
-    }
-
-    private fun parseAttTagXmlString(xmlContent: String, tags: Set<String>, attr: String): Set<String> {
-        val out = LinkedHashSet<String>()
-        withXmlStringParser(xmlContent) { parser ->
-            parseAttTagXmlFromParser(parser, tags, attr, out)
-        }
-        return out
-    }
-
-    private fun parseAttTagXmlFromParser(
-        parser: XmlPullParser,
-        tags: Set<String>,
-        attr: String,
-        out: MutableSet<String>,
-    ) {
-        var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT) {
-            if (event == XmlPullParser.START_TAG && parser.name in tags) {
-                normalizePackageName(parser.getAttributeValue(null, attr))?.let(out::add)
-            }
-            event = parser.next()
-        }
-    }
-
-    private fun parseTextTagXml(path: String, tags: Set<String>): Set<String> {
-        val out = LinkedHashSet<String>()
-        withXmlParser(path) { parser ->
             var event = parser.eventType
             while (event != XmlPullParser.END_DOCUMENT) {
                 if (event == XmlPullParser.START_TAG && parser.name in tags) {
-                    val attrPkg = parser.getAttributeValue(null, "att")
-                        ?: parser.getAttributeValue(null, "pkg")
-                        ?: parser.getAttributeValue(null, "name")
-                    val normalizedAttr = normalizePackageName(attrPkg)
-                    if (normalizedAttr != null) {
-                        out.add(normalizedAttr)
-                    } else {
-                        val text = runCatching { parser.nextText() }.getOrNull()
-                        normalizePackageName(text)?.let(out::add)
-                    }
+                    normalizePackageName(parser.getAttributeValue(null, attr))?.let(out::add)
                 }
                 event = parser.next()
             }
         }
         return out
+    }
+
+    private fun parseTextTagXml(path: String, tags: Set<String>): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlParser(path) { parser ->
+            parseTextTagXmlFromParser(parser, tags, out)
+        }
+        return out
+    }
+
+    private fun parseTextTagXmlString(xmlContent: String, tags: Set<String>): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlStringParser(xmlContent) { parser ->
+            parseTextTagXmlFromParser(parser, tags, out)
+        }
+        return out
+    }
+
+    private fun parseTextTagXmlFromParser(
+        parser: XmlPullParser,
+        tags: Set<String>,
+        out: MutableSet<String>,
+    ) {
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG && parser.name in tags) {
+                val attrPkg = parser.getAttributeValue(null, "att")
+                    ?: parser.getAttributeValue(null, "pkg")
+                    ?: parser.getAttributeValue(null, "name")
+                val normalizedAttr = normalizePackageName(attrPkg)
+                if (normalizedAttr != null) {
+                    out.add(normalizedAttr)
+                } else {
+                    val text = runCatching { parser.nextText() }.getOrNull()
+                    normalizePackageName(text)?.let(out::add)
+                }
+            }
+            event = parser.next()
+        }
     }
 
     private data class GuardElfBlackResult(val pkgs: Set<String>, val isOpen: Boolean)
@@ -360,24 +439,164 @@ internal object SystemListParser {
     private data class StartupV3Result(val autostart: Set<String>, val associate: Set<String>)
 
     private fun parseStartupV3(path: String): StartupV3Result {
+        var result = StartupV3Result(emptySet(), emptySet())
+        withXmlParser(path) { parser ->
+            result = parseStartupV3FromParser(parser)
+        }
+        return result
+    }
+
+    private fun parseStartupV3String(xmlContent: String): StartupV3Result {
+        var result = StartupV3Result(emptySet(), emptySet())
+        withXmlStringParser(xmlContent) { parser ->
+            result = parseStartupV3FromParser(parser)
+        }
+        return result
+    }
+
+    private fun mergeStartupV3Results(local: StartupV3Result, cloud: StartupV3Result?): StartupV3Result {
+        if (cloud == null) return local
+        return StartupV3Result(
+            autostart = local.autostart + cloud.autostart,
+            associate = local.associate + cloud.associate,
+        )
+    }
+
+    private fun parseStartupV3FromParser(parser: XmlPullParser): StartupV3Result {
         val auto = LinkedHashSet<String>()
         val assoc = LinkedHashSet<String>()
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG && parser.name == "startup") {
+                val pkg = normalizePackageName(parser.getAttributeValue(null, "pkgName"))
+                val type = parser.getAttributeValue(null, "type")
+                val all = parser.getAttributeValue(null, "all")
+                if (pkg != null && (all == "1" || all == "11")) {
+                    if (type == "1") auto.add(pkg)
+                    if (type == "2") assoc.add(pkg)
+                }
+            }
+            event = parser.next()
+        }
+        return StartupV3Result(auto, assoc)
+    }
+
+    private fun parseAppRevival(path: String): Set<String> {
+        val out = LinkedHashSet<String>()
         withXmlParser(path) { parser ->
+            parseAppRevivalFromParser(parser, out)
+        }
+        return out
+    }
+
+    private fun parseAppRevivalString(xmlContent: String): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlStringParser(xmlContent) { parser ->
+            parseAppRevivalFromParser(parser, out)
+        }
+        return out
+    }
+
+    private fun parseAppRevivalFromParser(parser: XmlPullParser, out: MutableSet<String>) {
+        var inRevival = false
+        var revivalEnable = true
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when {
+                    parser.name == "appRevival" -> {
+                        inRevival = true
+                        revivalEnable = true
+                    }
+                    inRevival && parser.name == "policy" -> {
+                        revivalEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
+                    }
+                    inRevival && revivalEnable && parser.name == "item" -> {
+                        normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(out::add)
+                    }
+                }
+                XmlPullParser.END_TAG -> if (parser.name == "appRevival") {
+                    inRevival = false
+                }
+            }
+            event = parser.next()
+        }
+    }
+
+    private fun parseClearAppFilterWhite(xmlContent: String): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlStringParser(xmlContent) { parser ->
             var event = parser.eventType
             while (event != XmlPullParser.END_DOCUMENT) {
-                if (event == XmlPullParser.START_TAG && parser.name == "startup") {
-                    val pkg = normalizePackageName(parser.getAttributeValue(null, "pkgName"))
-                    val type = parser.getAttributeValue(null, "type")
-                    val all = parser.getAttributeValue(null, "all")
-                    if (pkg != null && (all == "1" || all == "11")) {
-                        if (type == "1") auto.add(pkg)
-                        if (type == "2") assoc.add(pkg)
+                if (event == XmlPullParser.START_TAG &&
+                    (parser.name == "p_wl" || parser.name == "p_crm" || parser.name == "p_cond_wl")
+                ) {
+                    val hasKeepAttr = listOf(
+                        "proc_keep",
+                        "kill_restart_service",
+                        "service_quick_restart",
+                        "remove_task_filter",
+                    ).any { !parser.getAttributeValue(null, it).isNullOrBlank() }
+                    if (hasKeepAttr) {
+                        normalizePackageName(parser.getAttributeValue(null, "pkg"))?.let(out::add)
                     }
                 }
                 event = parser.next()
             }
         }
-        return StartupV3Result(auto, assoc)
+        return out
+    }
+
+    private fun parseCustomClearItgsaWhite(xmlContent: String): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlStringParser(xmlContent) { parser ->
+            var inItgsaList = false
+            var event = parser.eventType
+            while (event != XmlPullParser.END_DOCUMENT) {
+                when (event) {
+                    XmlPullParser.START_TAG -> when {
+                        parser.name == "config_list" -> {
+                            val key = parser.getAttributeValue(null, "key").orEmpty()
+                            inItgsaList = key.contains("itgsa", ignoreCase = true)
+                        }
+                        inItgsaList && parser.name == "sub" -> {
+                            normalizePackageName(parser.getAttributeValue(null, "val"))?.let(out::add)
+                        }
+                    }
+                    XmlPullParser.END_TAG -> if (parser.name == "config_list") {
+                        inItgsaList = false
+                    }
+                }
+                event = parser.next()
+            }
+        }
+        return out
+    }
+
+    private fun parseAthenaSceneWhite(xmlContent: String): Set<String> {
+        val out = LinkedHashSet<String>()
+        withXmlStringParser(xmlContent) { parser ->
+            var inSceneList = false
+            var event = parser.eventType
+            while (event != XmlPullParser.END_DOCUMENT) {
+                when (event) {
+                    XmlPullParser.START_TAG -> when {
+                        parser.name == "config_list" -> {
+                            val key = parser.getAttributeValue(null, "key").orEmpty()
+                            inSceneList = key.startsWith("xiaobai_scene_packages")
+                        }
+                        inSceneList && parser.name == "sub" -> {
+                            normalizePackageName(parser.getAttributeValue(null, "val"))?.let(out::add)
+                        }
+                    }
+                    XmlPullParser.END_TAG -> if (parser.name == "config_list") {
+                        inSceneList = false
+                    }
+                }
+                event = parser.next()
+            }
+        }
+        return out
     }
 
     private data class StartupDynamicResult(
@@ -439,46 +658,71 @@ internal object SystemListParser {
     )
 
     private fun parseCpuLimitConfig(path: String): CpuLimitConfigResult {
+        var result = CpuLimitConfigResult(emptySet(), true, emptySet(), true, emptySet())
+        withXmlParser(path) { parser ->
+            result = parseCpuLimitConfigFromParser(parser)
+        }
+        return result
+    }
+
+    private fun parseCpuLimitConfigString(xmlContent: String): CpuLimitConfigResult {
+        var result = CpuLimitConfigResult(emptySet(), true, emptySet(), true, emptySet())
+        withXmlStringParser(xmlContent) { parser ->
+            result = parseCpuLimitConfigFromParser(parser)
+        }
+        return result
+    }
+
+    private fun mergeCpuLimitResults(local: CpuLimitConfigResult, cloud: CpuLimitConfigResult?): CpuLimitConfigResult {
+        if (cloud == null) return local
+        return CpuLimitConfigResult(
+            vipHbg = local.vipHbg + cloud.vipHbg,
+            vipHbgEnable = cloud.vipHbgEnable && local.vipHbgEnable,
+            particular = local.particular + cloud.particular,
+            particularEnable = cloud.particularEnable && local.particularEnable,
+            black = local.black + cloud.black,
+        )
+    }
+
+    private fun parseCpuLimitConfigFromParser(parser: XmlPullParser): CpuLimitConfigResult {
         val vipHbg = LinkedHashSet<String>()
         val particular = LinkedHashSet<String>()
         val black = LinkedHashSet<String>()
         var vipHbgEnable = true
         var particularEnable = true
         var section: String? = null
-        withXmlParser(path) { parser ->
-            var event = parser.eventType
-            while (event != XmlPullParser.END_DOCUMENT) {
-                when (event) {
-                    XmlPullParser.START_TAG -> when {
-                        parser.name == "cpuSetPkg" && parser.getAttributeValue(null, "category") == "black" -> {
-                            section = "black"
-                        }
-                        parser.name == "vip_HBG" -> {
-                            section = "vip_HBG"
-                            vipHbgEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
-                        }
-                        parser.name == "particularPkg" -> {
-                            section = "particularPkg"
-                            particularEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
-                        }
-                        section != null && parser.name == "pkg" -> {
-                            val pkg = normalizePackageName(parser.getAttributeValue(null, "name"))
-                                ?: normalizePackageName(runCatching { parser.nextText() }.getOrNull())
-                            if (pkg != null) {
-                                when (section) {
-                                    "black" -> black.add(pkg)
-                                    "vip_HBG" -> vipHbg.add(pkg)
-                                    "particularPkg" -> particular.add(pkg)
-                                }
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when {
+                    parser.name == "cpuSetPkg" && parser.getAttributeValue(null, "category") == "black" -> {
+                        section = "black"
+                    }
+                    parser.name == "vip_HBG" -> {
+                        section = "vip_HBG"
+                        vipHbgEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
+                    }
+                    parser.name == "particularPkg" -> {
+                        section = "particularPkg"
+                        particularEnable = parser.getAttributeValue(null, "enable")?.equals("false", true) != true
+                    }
+                    section != null && parser.name == "pkg" -> {
+                        val pkg = normalizePackageName(parser.getAttributeValue(null, "name"))
+                            ?: normalizePackageName(runCatching { parser.nextText() }.getOrNull())
+                        if (pkg != null) {
+                            when (section) {
+                                "black" -> black.add(pkg)
+                                "vip_HBG" -> vipHbg.add(pkg)
+                                "particularPkg" -> particular.add(pkg)
                             }
                         }
                     }
-                    XmlPullParser.END_TAG -> when (parser.name) {
-                        "cpuSetPkg", "vip_HBG", "particularPkg" -> section = null
-                    }
                 }
-                event = parser.next()
+                XmlPullParser.END_TAG -> when (parser.name) {
+                    "cpuSetPkg", "vip_HBG", "particularPkg" -> section = null
+                }
             }
+            event = parser.next()
         }
         return CpuLimitConfigResult(vipHbg, vipHbgEnable, particular, particularEnable, black)
     }
