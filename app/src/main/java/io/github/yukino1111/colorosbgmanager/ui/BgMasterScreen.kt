@@ -1332,7 +1332,7 @@ private fun SingleDimensionAppCard(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        modifier = modifier,
         leadingContent = {
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
         },
@@ -1440,7 +1440,7 @@ private fun AllDimensionsAppCard(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        modifier = modifier.animateContentSize(animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
+        modifier = modifier,
         leadingContent = {
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
         },

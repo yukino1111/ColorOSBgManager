@@ -7,14 +7,18 @@ plugins {
 
 android {
     namespace = "io.github.yukino1111.colorosbgmanager"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         applicationId = "io.github.yukino1111.colorosbgmanager"
         minSdk = 33
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.1.2"
+        versionCode = 6
+        versionName = "1.1.3"
     }
 
     androidResources {
