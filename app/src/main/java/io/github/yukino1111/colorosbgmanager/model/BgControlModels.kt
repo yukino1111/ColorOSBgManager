@@ -607,6 +607,30 @@ object RulesCodec {
 
     val AUTO_FREEZE_DELAY_OPTIONS = listOf(0, 60, 300)
 
+    val DEFAULT_ALLOW_PRESET: Set<BgSubsystem> = linkedSetOf(
+        BgSubsystem.HANS_FREEZE,
+        BgSubsystem.AUTO_START,
+        BgSubsystem.ASSOCIATE_START,
+        BgSubsystem.BATTERY_DOZE,
+        BgSubsystem.ATHENA_RECENT,
+        BgSubsystem.DOZE_NET,
+    )
+
+    val DEFAULT_RESTRICT_PRESET: Set<BgSubsystem> = linkedSetOf(
+        BgSubsystem.HANS_FREEZE,
+        BgSubsystem.BATTERY_DOZE,
+        BgSubsystem.ATHENA_RECENT,
+    )
+
+    fun encodeSubsystemPreset(subsystems: Set<BgSubsystem>): String =
+        BgSubsystem.entries.filter { it in subsystems }.joinToString(",") { it.key }
+
+    fun decodeSubsystemPreset(raw: String?, fallback: Set<BgSubsystem>): Set<BgSubsystem> {
+        if (raw == null) return fallback
+        if (raw.isEmpty()) return emptySet()
+        return raw.split(',').mapNotNullTo(LinkedHashSet()) { BgSubsystem.fromKey(it) }
+    }
+
     fun normalizeAutoFreezeDelaySec(sec: Int): Int = when {
         sec <= 0 -> 0
         sec < 180 -> 60

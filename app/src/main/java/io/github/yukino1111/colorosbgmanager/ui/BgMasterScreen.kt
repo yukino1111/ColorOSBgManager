@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,6 +47,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.AddToHomeScreen
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -69,6 +71,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.RssFeed
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
@@ -84,6 +87,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -108,12 +112,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -182,7 +188,10 @@ fun BgMasterScreen(
     onRefreshAll: () -> Unit,
     onToggleLanguage: () -> Unit,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
-    onSetAllForPackage: (AppUserKey, PolicyMode) -> Unit,
+    onResetSinglePackage: (AppUserKey) -> Unit,
+    onResetAllRules: () -> Unit,
+    onApplyPreset: (AppUserKey, Set<BgSubsystem>, PolicyMode) -> Unit,
+    onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
     onLoadPackageRuntime: (String, Int) -> Unit,
     onLoadProcesses: (Boolean) -> Unit,
@@ -201,7 +210,10 @@ fun BgMasterScreen(
             onRefreshAll = onRefreshAll,
             onToggleLanguage = onToggleLanguage,
             onSetRule = onSetRule,
-            onSetAllForPackage = onSetAllForPackage,
+            onResetSinglePackage = onResetSinglePackage,
+            onResetAllRules = onResetAllRules,
+            onApplyPreset = onApplyPreset,
+            onUpdatePreset = onUpdatePreset,
             onUpdateGlobals = onUpdateGlobals,
             onLoadPackageRuntime = onLoadPackageRuntime,
             onLoadProcesses = onLoadProcesses,
@@ -223,7 +235,10 @@ private fun BgMasterScreenContent(
     onRefreshAll: () -> Unit,
     onToggleLanguage: () -> Unit,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
-    onSetAllForPackage: (AppUserKey, PolicyMode) -> Unit,
+    onResetSinglePackage: (AppUserKey) -> Unit,
+    onResetAllRules: () -> Unit,
+    onApplyPreset: (AppUserKey, Set<BgSubsystem>, PolicyMode) -> Unit,
+    onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
     onLoadPackageRuntime: (String, Int) -> Unit,
     onLoadProcesses: (Boolean) -> Unit,
@@ -257,6 +272,7 @@ private fun BgMasterScreenContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val haptics = LocalHapticFeedback.current
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showResetAllDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.statusMessage) {
         val msg = state.statusMessage ?: return@LaunchedEffect
@@ -369,17 +385,26 @@ private fun BgMasterScreenContent(
                                     }
                                 },
                                 actions = {
-                                    IconButton(
-                                        onClick = onRefreshAll,
-                                        enabled = !state.loadingSnapshot && !state.loadingApps,
-                                    ) {
-                                        if (state.loadingSnapshot) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
-                                                strokeWidth = 2.2.dp,
-                                            )
-                                        } else {
-                                            Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
+                                    if (selectedTab == 1) {
+                                        IconButton(
+                                            onClick = { showResetAllDialog = true },
+                                            enabled = state.rules.isNotEmpty(),
+                                        ) {
+                                            Icon(Icons.Rounded.RestartAlt, contentDescription = strings.resetAllAppsCd)
+                                        }
+                                    } else {
+                                        IconButton(
+                                            onClick = onRefreshAll,
+                                            enabled = !state.loadingSnapshot && !state.loadingApps,
+                                        ) {
+                                            if (state.loadingSnapshot) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(20.dp),
+                                                    strokeWidth = 2.2.dp,
+                                                )
+                                            } else {
+                                                Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
+                                            }
                                         }
                                     }
                                 },
@@ -487,7 +512,9 @@ private fun BgMasterScreenContent(
                         onBack = popBack,
                         onLoadRuntime = { onLoadPackageRuntime(currentRoute.target.packageName, currentRoute.target.userId) },
                         onSetRule = { sub, mode -> onSetRule(currentRoute.target, sub, mode) },
-                        onSetAll = { mode -> onSetAllForPackage(currentRoute.target, mode) },
+                        onResetToDefault = { onResetSinglePackage(currentRoute.target) },
+                        onApplyPreset = { subs, mode -> onApplyPreset(currentRoute.target, subs, mode) },
+                        onUpdatePreset = onUpdatePreset,
                         onSetAutoFreeze = { enabled -> onSetAutoFreeze(currentRoute.target, enabled) },
                         onSetAutoUnfreeze = { enabled -> onSetAutoUnfreeze(currentRoute.target, enabled) },
                         onSetPackageSuspended = { suspend -> onSetPackageSuspended(currentRoute.target, suspend) },
@@ -518,6 +545,28 @@ private fun BgMasterScreenContent(
 
     if (showAboutDialog) {
         BgManagerAboutDialog(onDismiss = { showAboutDialog = false })
+    }
+    if (showResetAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetAllDialog = false },
+            title = { Text(strings.resetAllDialogTitle) },
+            text = { Text(strings.resetAllDialogMessage(state.rules.size)) },
+            dismissButton = {
+                TextButton(onClick = { showResetAllDialog = false }) {
+                    Text(strings.cancel)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onResetAllRules()
+                        showResetAllDialog = false
+                    },
+                ) {
+                    Text(strings.confirmReset)
+                }
+            },
+        )
     }
 }
 
@@ -1469,6 +1518,158 @@ private fun AllDimensionsAppCard(
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PresetSplitButton(
+    label: String,
+    containerColor: Color,
+    contentColor: Color,
+    moreCd: String,
+    onApply: () -> Unit,
+    onOpenConfig: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptics = LocalHapticFeedback.current
+    Surface(
+        modifier = modifier.height(44.dp),
+        shape = CircleShape,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .combinedClickable(
+                        onClick = onApply,
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOpenConfig()
+                        },
+                    )
+                    .padding(start = 14.dp, end = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLargeEmphasized,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            VerticalDivider(
+                modifier = Modifier.height(20.dp),
+                color = contentColor.copy(alpha = 0.28f),
+            )
+            Box(
+                modifier = Modifier
+                    .width(36.dp)
+                    .fillMaxHeight()
+                    .clickable(onClick = onOpenConfig),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.ExpandMore,
+                    contentDescription = moreCd,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetConfigDialog(
+    isAllow: Boolean,
+    initialSelection: Set<BgSubsystem>,
+    onDismiss: () -> Unit,
+    onSave: (Set<BgSubsystem>) -> Unit,
+    onSaveAndApply: (Set<BgSubsystem>) -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    var selected by remember(isAllow, initialSelection) { mutableStateOf(initialSelection) }
+    val recommended = if (isAllow) RulesCodec.DEFAULT_ALLOW_PRESET else RulesCodec.DEFAULT_RESTRICT_PRESET
+    val orderedSelected = remember(selected) {
+        BgSubsystem.entries.filterTo(LinkedHashSet()) { it in selected }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (isAllow) strings.presetConfigAllowTitle else strings.presetConfigRestrictTitle)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = strings.presetConfigHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+                BgSubsystem.entries.forEach { sub ->
+                    val checked = sub in selected
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable {
+                                selected = if (checked) selected - sub else selected + sub
+                            }
+                            .padding(vertical = 6.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = null,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.subsystemTitle(sub),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = strings.subsystemDesc(sub),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { selected = recommended }) {
+                    Text(strings.presetRestoreRecommended)
+                }
+                TextButton(onClick = { onSave(orderedSelected) }) {
+                    Text(strings.presetSaveOnly)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSaveAndApply(orderedSelected) },
+                enabled = orderedSelected.isNotEmpty(),
+            ) {
+                Text(strings.presetSaveAndApply)
+            }
+        },
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun AppDetailPage(
@@ -1479,7 +1680,9 @@ private fun AppDetailPage(
     onBack: () -> Unit,
     onLoadRuntime: () -> Unit,
     onSetRule: (BgSubsystem, PolicyMode) -> Unit,
-    onSetAll: (PolicyMode) -> Unit,
+    onResetToDefault: () -> Unit,
+    onApplyPreset: (Set<BgSubsystem>, PolicyMode) -> Unit,
+    onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
     onSetAutoFreeze: (Boolean) -> Unit,
     onSetAutoUnfreeze: (Boolean) -> Unit,
     onSetPackageSuspended: (Boolean) -> Unit,
@@ -1562,17 +1765,11 @@ private fun AppDetailPage(
                     }
                 },
                 actions = {
-                    if (state.snapshot.serverInjected) {
-                        IconButton(onClick = onLoadRuntime, enabled = !state.loadingDetailRuntime) {
-                            if (state.loadingDetailRuntime) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            } else {
-                                Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
-                            }
-                        }
+                    IconButton(
+                        onClick = onResetToDefault,
+                        enabled = pkgRules.isNotEmpty(),
+                    ) {
+                        Icon(Icons.Rounded.RestartAlt, contentDescription = strings.resetSingleAppCd)
                     }
                 },
             )
@@ -1603,21 +1800,45 @@ private fun AppDetailPage(
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        var editingPresetIsAllow by remember { mutableStateOf<Boolean?>(null) }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = { onSetAll(PolicyMode.FORCE_ALLOW) },
+                            PresetSplitButton(
+                                label = "${strings.allowPreset} (${state.allowPreset.size})",
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                                moreCd = strings.presetMoreCd,
+                                onApply = { onApplyPreset(state.allowPreset, PolicyMode.FORCE_ALLOW) },
+                                onOpenConfig = { editingPresetIsAllow = true },
                                 modifier = Modifier.weight(1f),
-                                shapes = ButtonDefaults.shapes(),
-                            ) {
-                                Text(strings.allowAll)
-                            }
-                            FilledTonalButton(
-                                onClick = { onSetAll(PolicyMode.FOLLOW_SYSTEM) },
+                            )
+                            PresetSplitButton(
+                                label = "${strings.restrictPreset} (${state.restrictPreset.size})",
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                moreCd = strings.presetMoreCd,
+                                onApply = { onApplyPreset(state.restrictPreset, PolicyMode.FORCE_RESTRICT) },
+                                onOpenConfig = { editingPresetIsAllow = false },
                                 modifier = Modifier.weight(1f),
-                                shapes = ButtonDefaults.shapes(),
-                            ) {
-                                Text(strings.restoreDefault)
-                            }
+                            )
+                        }
+                        editingPresetIsAllow?.let { isAllow ->
+                            PresetConfigDialog(
+                                isAllow = isAllow,
+                                initialSelection = if (isAllow) state.allowPreset else state.restrictPreset,
+                                onDismiss = { editingPresetIsAllow = null },
+                                onSave = { selected ->
+                                    onUpdatePreset(isAllow, selected)
+                                    editingPresetIsAllow = null
+                                },
+                                onSaveAndApply = { selected ->
+                                    onUpdatePreset(isAllow, selected)
+                                    onApplyPreset(
+                                        selected,
+                                        if (isAllow) PolicyMode.FORCE_ALLOW else PolicyMode.FORCE_RESTRICT,
+                                    )
+                                    editingPresetIsAllow = null
+                                },
+                            )
                         }
 
                         BgSubsystem.entries.forEach { sub ->

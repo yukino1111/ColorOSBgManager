@@ -55,6 +55,8 @@ data class BgMasterUiState(
     val snapshot: SystemSnapshot = SystemSnapshot(),
     val users: List<DeviceUserInfo> = listOf(DeviceUserInfo(0, "Owner", false)),
     val rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>> = emptyMap(),
+    val allowPreset: Set<BgSubsystem> = RulesCodec.DEFAULT_ALLOW_PRESET,
+    val restrictPreset: Set<BgSubsystem> = RulesCodec.DEFAULT_RESTRICT_PRESET,
     val autoFreezePkgs: Set<AppUserKey> = emptySet(),
     val autoUnfreezeDisabledPkgs: Set<AppUserKey> = emptySet(),
     val globalFlags: GlobalRuleFlags = GlobalRuleFlags(),
@@ -84,6 +86,14 @@ class DeviceSyncClient private constructor(private val context: Context) {
             language = AppLanguage.fromCode(
                 code = uiPrefs.getString(KEY_LANGUAGE, null),
                 defaultZh = Locale.getDefault().language.startsWith("zh"),
+            ),
+            allowPreset = RulesCodec.decodeSubsystemPreset(
+                uiPrefs.getString(KEY_ALLOW_PRESET, null),
+                RulesCodec.DEFAULT_ALLOW_PRESET,
+            ),
+            restrictPreset = RulesCodec.decodeSubsystemPreset(
+                uiPrefs.getString(KEY_RESTRICT_PRESET, null),
+                RulesCodec.DEFAULT_RESTRICT_PRESET,
             ),
         ),
     )
@@ -405,35 +415,69 @@ class DeviceSyncClient private constructor(private val context: Context) {
         }
     }
 
-    fun setRule(target: AppUserKey, subsystem: BgSubsystem, mode: PolicyMode) {
+    private inline fun commitRules(
+        transform: (MutableMap<AppUserKey, Map<BgSubsystem, PolicyMode>>) -> Unit,
+    ): Boolean {
         val prefs = remotePrefs ?: run {
             postMessage(stringsFor(_state.value.language).toastNeedLposedRule)
-            return
+            return false
         }
-        val updated = _state.value.rules.toMutableMap().apply {
-            val pkgMap = (this[target]?.toMutableMap() ?: mutableMapOf()).apply {
-                if (mode == PolicyMode.FOLLOW_SYSTEM) remove(subsystem) else put(subsystem, mode)
-            }
-            if (pkgMap.isEmpty()) remove(target) else put(target, pkgMap)
-        }
+        val updated = _state.value.rules.toMutableMap().apply(transform)
         prefs.edit().putStringSet(RulesCodec.KEY_RULES_SET, RulesCodec.encodeRules(updated)).apply()
         _state.update { it.copy(rules = updated) }
+        return true
+    }
+
+    fun setRule(target: AppUserKey, subsystem: BgSubsystem, mode: PolicyMode) {
+        commitRules { map ->
+            val pkgMap = (map[target]?.toMutableMap() ?: mutableMapOf()).apply {
+                if (mode == PolicyMode.FOLLOW_SYSTEM) remove(subsystem) else put(subsystem, mode)
+            }
+            if (pkgMap.isEmpty()) map.remove(target) else map[target] = pkgMap
+        }
     }
 
     fun setAllSubsystemsForPackage(target: AppUserKey, mode: PolicyMode) {
-        val prefs = remotePrefs ?: run {
-            postMessage(stringsFor(_state.value.language).toastNeedLposedRule)
-            return
-        }
-        val updated = _state.value.rules.toMutableMap().apply {
+        val committed = commitRules { map ->
             if (mode == PolicyMode.FOLLOW_SYSTEM) {
-                remove(target)
+                map.remove(target)
             } else {
-                put(target, BgSubsystem.entries.associateWith { mode })
+                map[target] = BgSubsystem.entries.associateWith { mode }
             }
         }
-        prefs.edit().putStringSet(RulesCodec.KEY_RULES_SET, RulesCodec.encodeRules(updated)).apply()
-        _state.update { it.copy(rules = updated) }
+        if (committed && mode == PolicyMode.FOLLOW_SYSTEM) {
+            postMessage(stringsFor(_state.value.language).toastResetAppOk)
+        }
+    }
+
+    fun applyPresetForPackage(target: AppUserKey, subsystems: Set<BgSubsystem>, mode: PolicyMode) {
+        if (subsystems.isEmpty()) {
+            postMessage(stringsFor(_state.value.language).presetEmptyWarning)
+            return
+        }
+        commitRules { map ->
+            val pkgMap = (map[target]?.toMutableMap() ?: mutableMapOf()).apply {
+                subsystems.forEach { sub ->
+                    if (mode == PolicyMode.FOLLOW_SYSTEM) remove(sub) else put(sub, mode)
+                }
+            }
+            if (pkgMap.isEmpty()) map.remove(target) else map[target] = pkgMap
+        }
+    }
+
+    fun resetAllAppRules() {
+        if (commitRules { it.clear() }) {
+            postMessage(stringsFor(_state.value.language).toastResetAllOk)
+        }
+    }
+
+    fun updateSubsystemPreset(isAllow: Boolean, subsystems: Set<BgSubsystem>) {
+        val ordered = BgSubsystem.entries.filterTo(LinkedHashSet()) { it in subsystems }
+        val key = if (isAllow) KEY_ALLOW_PRESET else KEY_RESTRICT_PRESET
+        uiPrefs.edit().putString(key, RulesCodec.encodeSubsystemPreset(ordered)).apply()
+        _state.update {
+            if (isAllow) it.copy(allowPreset = ordered) else it.copy(restrictPreset = ordered)
+        }
     }
 
     suspend fun setAutoFreeze(target: AppUserKey, enabled: Boolean) {
@@ -565,6 +609,8 @@ class DeviceSyncClient private constructor(private val context: Context) {
         private const val UI_PREF_NAME = "ui_prefs"
         private const val KEY_LANGUAGE = "app_language"
         private const val KEY_SHORTCUT_TOKEN = "shortcut_secret_token"
+        private const val KEY_ALLOW_PRESET = "allow_preset_subsystems"
+        private const val KEY_RESTRICT_PRESET = "restrict_preset_subsystems"
 
         @Volatile
         private var instance: DeviceSyncClient? = null

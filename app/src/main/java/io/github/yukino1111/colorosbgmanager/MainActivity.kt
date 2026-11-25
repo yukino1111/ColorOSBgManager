@@ -37,7 +37,12 @@ class MainActivity : ComponentActivity() {
                     },
                     onToggleLanguage = syncClient::toggleLanguage,
                     onSetRule = syncClient::setRule,
-                    onSetAllForPackage = syncClient::setAllSubsystemsForPackage,
+                    onResetSinglePackage = { target ->
+                        syncClient.setAllSubsystemsForPackage(target, io.github.yukino1111.colorosbgmanager.model.PolicyMode.FOLLOW_SYSTEM)
+                    },
+                    onResetAllRules = syncClient::resetAllAppRules,
+                    onApplyPreset = syncClient::applyPresetForPackage,
+                    onUpdatePreset = syncClient::updateSubsystemPreset,
                     onUpdateGlobals = syncClient::updateGlobalFlag,
                     onLoadPackageRuntime = { pkg, userId ->
                         lifecycleScope.launch { syncClient.loadPackageRuntime(pkg, userId) }

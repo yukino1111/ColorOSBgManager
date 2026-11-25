@@ -282,4 +282,41 @@ class BgControlModelsTest {
         )
         assertEquals(listOf("com.sys.allow", "com.user.allow"), restoredPkgs.toList())
     }
+
+    @Test
+    fun subsystemPresets_haveExpectedDefaultsAndRoundTrip() {
+        assertEquals(
+            setOf(
+                BgSubsystem.HANS_FREEZE,
+                BgSubsystem.AUTO_START,
+                BgSubsystem.ASSOCIATE_START,
+                BgSubsystem.BATTERY_DOZE,
+                BgSubsystem.ATHENA_RECENT,
+                BgSubsystem.DOZE_NET,
+            ),
+            RulesCodec.DEFAULT_ALLOW_PRESET,
+        )
+        assertEquals(
+            setOf(
+                BgSubsystem.HANS_FREEZE,
+                BgSubsystem.BATTERY_DOZE,
+                BgSubsystem.ATHENA_RECENT,
+            ),
+            RulesCodec.DEFAULT_RESTRICT_PRESET,
+        )
+
+        assertEquals(
+            RulesCodec.DEFAULT_RESTRICT_PRESET,
+            RulesCodec.decodeSubsystemPreset(null, RulesCodec.DEFAULT_RESTRICT_PRESET),
+        )
+        assertEquals(
+            emptySet<BgSubsystem>(),
+            RulesCodec.decodeSubsystemPreset("", RulesCodec.DEFAULT_RESTRICT_PRESET),
+        )
+
+        val custom = setOf(BgSubsystem.CPU_LIMIT, BgSubsystem.HANS_FREEZE)
+        val encoded = RulesCodec.encodeSubsystemPreset(custom)
+        assertEquals("hans,cpu_limit", encoded)
+        assertEquals(custom, RulesCodec.decodeSubsystemPreset(encoded, RulesCodec.DEFAULT_ALLOW_PRESET))
+    }
 }
