@@ -42,6 +42,10 @@ class MainActivity : ComponentActivity() {
                     },
                     onResetAllRules = syncClient::resetAllAppRules,
                     onApplyPreset = syncClient::applyPresetForPackage,
+                    onApplyPresetBatch = { targets, subs, mode ->
+                        syncClient.applyPresetForPackages(targets, subs, mode)
+                    },
+                    onResetPackagesBatch = syncClient::resetPackagesToDefault,
                     onUpdatePreset = syncClient::updateSubsystemPreset,
                     onUpdateGlobals = syncClient::updateGlobalFlag,
                     onLoadPackageRuntime = { pkg, userId ->

@@ -17,8 +17,8 @@ android {
         applicationId = "io.github.yukino1111.colorosbgmanager"
         minSdk = 33
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.1.3"
+        versionCode = 7
+        versionName = "1.1.4"
     }
 
     androidResources {

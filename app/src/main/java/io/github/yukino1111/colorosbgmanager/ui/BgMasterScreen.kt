@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -103,6 +104,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedListItem
@@ -191,6 +193,8 @@ fun BgMasterScreen(
     onResetSinglePackage: (AppUserKey) -> Unit,
     onResetAllRules: () -> Unit,
     onApplyPreset: (AppUserKey, Set<BgSubsystem>, PolicyMode) -> Unit,
+    onApplyPresetBatch: (Set<AppUserKey>, Set<BgSubsystem>, PolicyMode) -> Boolean,
+    onResetPackagesBatch: (Set<AppUserKey>) -> Boolean,
     onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
     onLoadPackageRuntime: (String, Int) -> Unit,
@@ -213,6 +217,8 @@ fun BgMasterScreen(
             onResetSinglePackage = onResetSinglePackage,
             onResetAllRules = onResetAllRules,
             onApplyPreset = onApplyPreset,
+            onApplyPresetBatch = onApplyPresetBatch,
+            onResetPackagesBatch = onResetPackagesBatch,
             onUpdatePreset = onUpdatePreset,
             onUpdateGlobals = onUpdateGlobals,
             onLoadPackageRuntime = onLoadPackageRuntime,
@@ -238,6 +244,8 @@ private fun BgMasterScreenContent(
     onResetSinglePackage: (AppUserKey) -> Unit,
     onResetAllRules: () -> Unit,
     onApplyPreset: (AppUserKey, Set<BgSubsystem>, PolicyMode) -> Unit,
+    onApplyPresetBatch: (Set<AppUserKey>, Set<BgSubsystem>, PolicyMode) -> Boolean,
+    onResetPackagesBatch: (Set<AppUserKey>) -> Boolean,
     onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
     onUpdateGlobals: ((GlobalRuleFlags) -> GlobalRuleFlags) -> Unit,
     onLoadPackageRuntime: (String, Int) -> Unit,
@@ -259,6 +267,51 @@ private fun BgMasterScreenContent(
     var policyScopeFilter by remember { mutableStateOf(PolicyScopeFilter.ALL) }
     var selectedSubsystems by remember { mutableStateOf(BgSubsystem.entries.toSet()) }
     var autoFreezeOnly by remember { mutableStateOf(false) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedApps by remember { mutableStateOf<Set<AppUserKey>>(emptySet()) }
+
+    val groupedApps = remember(
+        state.apps,
+        state.rules,
+        state.snapshot,
+        state.autoFreezePkgs,
+        searchQuery,
+        appCategory,
+        policyScopeFilter,
+        selectedSubsystems,
+        autoFreezeOnly,
+    ) {
+        buildGroupedAppSections(
+            apps = state.apps,
+            rules = state.rules,
+            snapshot = state.snapshot,
+            autoFreezePkgs = state.autoFreezePkgs,
+            searchQuery = searchQuery,
+            appCategory = appCategory,
+            policyScopeFilter = policyScopeFilter,
+            selectedSubsystems = selectedSubsystems,
+            autoFreezeOnly = autoFreezeOnly,
+        )
+    }
+    val visibleAppKeys = remember(groupedApps) {
+        buildSet {
+            groupedApps.overridden.forEach { add(it.key) }
+            groupedApps.nativeHits.forEach { add(it.key) }
+            groupedApps.neutral.forEach { add(it.key) }
+        }
+    }
+    val isAppsSelectionActive = route == ScreenRoute.Home && selectedTab == 1 && selectionMode
+    val exitSelectionMode = {
+        selectionMode = false
+        selectedApps = emptySet()
+    }
+    val toggleSelectApp: (AppUserKey) -> Unit = { key ->
+        selectedApps = if (key in selectedApps) selectedApps - key else selectedApps + key
+    }
+    val enterSelectionMode: (AppUserKey) -> Unit = { key ->
+        selectionMode = true
+        selectedApps = if (key in selectedApps) selectedApps else selectedApps + key
+    }
 
     var procSearchQuery by remember { mutableStateOf("") }
     var procCategory by remember { mutableStateOf(ProcessCategoryFilter.USER) }
@@ -320,117 +373,205 @@ private fun BgMasterScreenContent(
         ) { currentRoute ->
             when (currentRoute) {
                 ScreenRoute.Home -> {
+                    BackHandler(enabled = isAppsSelectionActive) {
+                        exitSelectionMode()
+                    }
+                    val allVisibleSelected = visibleAppKeys.isNotEmpty() && visibleAppKeys.all { it in selectedApps }
                     Scaffold(
                         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
                         containerColor = MaterialTheme.colorScheme.surface,
                         snackbarHost = { SnackbarHost(snackbarHostState) },
                         topBar = {
-                            TopAppBar(
-                                colors = TopAppBarDefaults.topAppBarColors(
-                                    containerColor = MaterialTheme.colorScheme.surface,
-                                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                                ),
-                                title = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(
-                                            modifier = Modifier
-                                                .weight(1f, fill = false)
-                                                .combinedClickable(
-                                                    interactionSource = remember { MutableInteractionSource() },
-                                                    indication = null,
-                                                    onClick = {},
-                                                    onLongClick = {
-                                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                        showAboutDialog = true
-                                                    },
-                                                ),
-                                        ) {
-                                            Text(
-                                                strings.appTitle,
-                                                style = MaterialTheme.typography.titleLargeEmphasized,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            val subtitle = when {
-                                                !state.xposedConnected -> strings.lposedDisconnected
-                                                !state.snapshot.serverInjected -> strings.inactiveRebootHint
-                                                else -> strings.activatedSummary(state.rules.size)
-                                            }
-                                            Text(
-                                                subtitle,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
+                            if (isAppsSelectionActive) {
+                                TopAppBar(
+                                    colors = TopAppBarDefaults.topAppBarColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                                    ),
+                                    navigationIcon = {
+                                        IconButton(onClick = exitSelectionMode) {
+                                            Icon(Icons.Rounded.Close, contentDescription = strings.exitMultiSelectCd)
                                         }
-                                        Spacer(Modifier.width(10.dp))
-                                        FilledTonalButton(
-                                            onClick = onToggleLanguage,
-                                            shapes = ButtonDefaults.shapes(),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                            modifier = Modifier.height(32.dp),
+                                    },
+                                    title = {
+                                        Text(
+                                            text = strings.multiSelectTitle(selectedApps.size),
+                                            style = MaterialTheme.typography.titleLargeEmphasized,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                    actions = {
+                                        TextButton(
+                                            onClick = {
+                                                selectedApps = if (allVisibleSelected) {
+                                                    selectedApps - visibleAppKeys
+                                                } else {
+                                                    selectedApps + visibleAppKeys
+                                                }
+                                            },
+                                            enabled = visibleAppKeys.isNotEmpty(),
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Translate,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(15.dp),
-                                            )
-                                            Spacer(Modifier.width(4.dp))
-                                            Text(
-                                                text = strings.langSwitchLabel,
-                                                style = MaterialTheme.typography.labelMediumEmphasized,
-                                            )
+                                            Text(if (allVisibleSelected) strings.deselectAll else strings.selectAll)
                                         }
-                                    }
-                                },
-                                actions = {
-                                    if (selectedTab == 1) {
                                         IconButton(
-                                            onClick = { showResetAllDialog = true },
-                                            enabled = state.rules.isNotEmpty(),
+                                            onClick = {
+                                                if (onResetPackagesBatch(selectedApps)) {
+                                                    exitSelectionMode()
+                                                }
+                                            },
+                                            enabled = selectedApps.isNotEmpty(),
                                         ) {
-                                            Icon(Icons.Rounded.RestartAlt, contentDescription = strings.resetAllAppsCd)
+                                            Icon(Icons.Rounded.RestartAlt, contentDescription = strings.resetSelectedCd)
                                         }
-                                    } else {
-                                        IconButton(
-                                            onClick = onRefreshAll,
-                                            enabled = !state.loadingSnapshot && !state.loadingApps,
-                                        ) {
-                                            if (state.loadingSnapshot) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(20.dp),
-                                                    strokeWidth = 2.2.dp,
+                                    },
+                                    scrollBehavior = scrollBehavior,
+                                )
+                            } else {
+                                TopAppBar(
+                                    colors = TopAppBarDefaults.topAppBarColors(
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    ),
+                                    title = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .weight(1f, fill = false)
+                                                    .combinedClickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null,
+                                                        onClick = {},
+                                                        onLongClick = {
+                                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            showAboutDialog = true
+                                                        },
+                                                    ),
+                                            ) {
+                                                Text(
+                                                    strings.appTitle,
+                                                    style = MaterialTheme.typography.titleLargeEmphasized,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
                                                 )
-                                            } else {
-                                                Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
+                                                val subtitle = when {
+                                                    !state.xposedConnected -> strings.lposedDisconnected
+                                                    !state.snapshot.serverInjected -> strings.inactiveRebootHint
+                                                    else -> strings.activatedSummary(state.rules.size)
+                                                }
+                                                Text(
+                                                    subtitle,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                            Spacer(Modifier.width(10.dp))
+                                            FilledTonalButton(
+                                                onClick = onToggleLanguage,
+                                                shapes = ButtonDefaults.shapes(),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                                modifier = Modifier.height(32.dp),
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Translate,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(15.dp),
+                                                )
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    text = strings.langSwitchLabel,
+                                                    style = MaterialTheme.typography.labelMediumEmphasized,
+                                                )
                                             }
                                         }
-                                    }
-                                },
-                                scrollBehavior = scrollBehavior,
-                            )
+                                    },
+                                    actions = {
+                                        if (selectedTab == 1) {
+                                            IconButton(
+                                                onClick = { showResetAllDialog = true },
+                                                enabled = state.rules.isNotEmpty(),
+                                            ) {
+                                                Icon(Icons.Rounded.RestartAlt, contentDescription = strings.resetAllAppsCd)
+                                            }
+                                        } else {
+                                            IconButton(
+                                                onClick = onRefreshAll,
+                                                enabled = !state.loadingSnapshot && !state.loadingApps,
+                                            ) {
+                                                if (state.loadingSnapshot) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(20.dp),
+                                                        strokeWidth = 2.2.dp,
+                                                    )
+                                                } else {
+                                                    Icon(Icons.Rounded.Refresh, contentDescription = strings.refreshCd)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    scrollBehavior = scrollBehavior,
+                                )
+                            }
                         },
                         bottomBar = {
-                            NavigationBar {
-                                NavigationBarItem(
-                                    selected = selectedTab == 0,
-                                    onClick = { selectedTab = 0 },
-                                    icon = { Icon(Icons.Rounded.Dashboard, null) },
-                                    label = { Text(strings.tabOverview) },
-                                )
-                                NavigationBarItem(
-                                    selected = selectedTab == 1,
-                                    onClick = { selectedTab = 1 },
-                                    icon = { Icon(Icons.Rounded.Apps, null) },
-                                    label = { Text(strings.tabApps) },
-                                )
-                                NavigationBarItem(
-                                    selected = selectedTab == 2,
-                                    onClick = { selectedTab = 2 },
-                                    icon = { Icon(Icons.Rounded.Memory, null) },
-                                    label = { Text(strings.tabProcesses) },
-                                )
+                            AnimatedContent(
+                                targetState = isAppsSelectionActive,
+                                transitionSpec = {
+                                    fadeIn(motionScheme.defaultEffectsSpec()) togetherWith
+                                        fadeOut(motionScheme.fastEffectsSpec())
+                                },
+                                label = "home_bottom_bar",
+                            ) { inSelection ->
+                                if (inSelection) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                        tonalElevation = 3.dp,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        PresetActionRow(
+                                            allowPreset = state.allowPreset,
+                                            restrictPreset = state.restrictPreset,
+                                            onApplyPreset = { subs, mode ->
+                                                if (onApplyPresetBatch(selectedApps, subs, mode)) {
+                                                    exitSelectionMode()
+                                                }
+                                            },
+                                            onUpdatePreset = onUpdatePreset,
+                                            modifier = Modifier
+                                                .windowInsetsPadding(NavigationBarDefaults.windowInsets)
+                                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        )
+                                    }
+                                } else {
+                                    NavigationBar {
+                                        NavigationBarItem(
+                                            selected = selectedTab == 0,
+                                            onClick = {
+                                                exitSelectionMode()
+                                                selectedTab = 0
+                                            },
+                                            icon = { Icon(Icons.Rounded.Dashboard, null) },
+                                            label = { Text(strings.tabOverview) },
+                                        )
+                                        NavigationBarItem(
+                                            selected = selectedTab == 1,
+                                            onClick = { selectedTab = 1 },
+                                            icon = { Icon(Icons.Rounded.Apps, null) },
+                                            label = { Text(strings.tabApps) },
+                                        )
+                                        NavigationBarItem(
+                                            selected = selectedTab == 2,
+                                            onClick = {
+                                                exitSelectionMode()
+                                                selectedTab = 2
+                                            },
+                                            icon = { Icon(Icons.Rounded.Memory, null) },
+                                            label = { Text(strings.tabProcesses) },
+                                        )
+                                    }
+                                }
                             }
                         },
                     ) { padding ->
@@ -448,6 +589,7 @@ private fun BgMasterScreenContent(
                                         state = state,
                                         listState = overviewListState,
                                         onJumpToSubsystem = { sub ->
+                                            exitSelectionMode()
                                             selectedSubsystems = setOf(sub)
                                             autoFreezeOnly = false
                                             selectedTab = 1
@@ -458,6 +600,7 @@ private fun BgMasterScreenContent(
                                     )
                                     1 -> AppsTab(
                                         state = state,
+                                        groupedApps = groupedApps,
                                         listState = appsListState,
                                         searchQuery = searchQuery,
                                         onSearchChange = { searchQuery = it },
@@ -469,6 +612,13 @@ private fun BgMasterScreenContent(
                                         onSubsystemsChange = { selectedSubsystems = it },
                                         autoFreezeOnly = autoFreezeOnly,
                                         onAutoFreezeOnlyChange = { autoFreezeOnly = it },
+                                        selectionMode = selectionMode,
+                                        selectedApps = selectedApps,
+                                        onToggleSelect = toggleSelectApp,
+                                        onEnterSelectionMode = { key ->
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            enterSelectionMode(key)
+                                        },
                                         onSetRule = onSetRule,
                                         onOpenDetail = { target -> pushRoute(ScreenRoute.AppDetail(target)) },
                                     )
@@ -927,10 +1077,69 @@ internal fun <T> PopupFilterButton(
     }
 }
 
+private fun buildGroupedAppSections(
+    apps: List<InstalledAppEntry>,
+    rules: Map<AppUserKey, Map<BgSubsystem, PolicyMode>>,
+    snapshot: SystemSnapshot,
+    autoFreezePkgs: Set<AppUserKey>,
+    searchQuery: String,
+    appCategory: AppCategory,
+    policyScopeFilter: PolicyScopeFilter,
+    selectedSubsystems: Set<BgSubsystem>,
+    autoFreezeOnly: Boolean,
+): GroupedAppSections {
+    val allSubsystemsSelected = selectedSubsystems.size == BgSubsystem.entries.size
+    val q = searchQuery.trim().lowercase()
+    val overridden = ArrayList<InstalledAppEntry>()
+    val nativeHits = ArrayList<InstalledAppEntry>()
+    val neutral = ArrayList<InstalledAppEntry>()
+
+    apps
+        .asSequence()
+        .filter { app ->
+            val catOk = when (appCategory) {
+                AppCategory.USER -> !app.isSystem
+                AppCategory.SYSTEM -> app.isSystem
+                AppCategory.ALL -> true
+            }
+            val queryOk = q.isEmpty() ||
+                app.label.lowercase().contains(q) ||
+                app.packageName.lowercase().contains(q)
+            val freezeOk = !autoFreezeOnly || app.key in autoFreezePkgs
+            catOk && queryOk && freezeOk
+        }
+        .sortedWith(compareBy<InstalledAppEntry> { it.label.lowercase() }.thenBy { it.userId })
+        .forEach { app ->
+            val isOverridden = hasOverrideInDimensions(rules, app.key, selectedSubsystems) ||
+                ((allSubsystemsSelected || autoFreezeOnly) && app.key in autoFreezePkgs)
+            val isNativeHit = isManagedBySystemInDimensions(snapshot, app.packageName, selectedSubsystems)
+            val passesScope = when (policyScopeFilter) {
+                PolicyScopeFilter.ALL -> true
+                PolicyScopeFilter.OVERRIDDEN -> isOverridden
+                PolicyScopeFilter.NATIVE_HIT -> isNativeHit
+                PolicyScopeFilter.MANAGED -> isOverridden || isNativeHit
+            }
+            if (passesScope) {
+                when {
+                    isOverridden -> overridden.add(app)
+                    isNativeHit -> nativeHits.add(app)
+                    else -> neutral.add(app)
+                }
+            }
+        }
+
+    return GroupedAppSections(
+        overridden = overridden,
+        nativeHits = nativeHits,
+        neutral = neutral,
+    )
+}
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun AppsTab(
     state: BgMasterUiState,
+    groupedApps: GroupedAppSections,
     listState: LazyListState,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
@@ -942,6 +1151,10 @@ private fun AppsTab(
     onSubsystemsChange: (Set<BgSubsystem>) -> Unit,
     autoFreezeOnly: Boolean,
     onAutoFreezeOnlyChange: (Boolean) -> Unit,
+    selectionMode: Boolean,
+    selectedApps: Set<AppUserKey>,
+    onToggleSelect: (AppUserKey) -> Unit,
+    onEnterSelectionMode: (AppUserKey) -> Unit,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
     onOpenDetail: (AppUserKey) -> Unit,
 ) {
@@ -949,63 +1162,6 @@ private fun AppsTab(
     val motionScheme = MaterialTheme.motionScheme
     var nativeSectionExpanded by remember { mutableStateOf(true) }
     val allSubsystemsSelected = selectedSubsystems.size == BgSubsystem.entries.size
-
-    val groupedApps = remember(
-        state.apps,
-        state.rules,
-        state.snapshot,
-        state.autoFreezePkgs,
-        searchQuery,
-        appCategory,
-        policyScopeFilter,
-        selectedSubsystems,
-        autoFreezeOnly,
-    ) {
-        val q = searchQuery.trim().lowercase()
-        val overridden = ArrayList<InstalledAppEntry>()
-        val nativeHits = ArrayList<InstalledAppEntry>()
-        val neutral = ArrayList<InstalledAppEntry>()
-
-        state.apps
-            .asSequence()
-            .filter { app ->
-                val catOk = when (appCategory) {
-                    AppCategory.USER -> !app.isSystem
-                    AppCategory.SYSTEM -> app.isSystem
-                    AppCategory.ALL -> true
-                }
-                val queryOk = q.isEmpty() ||
-                    app.label.lowercase().contains(q) ||
-                    app.packageName.lowercase().contains(q)
-                val freezeOk = !autoFreezeOnly || app.key in state.autoFreezePkgs
-                catOk && queryOk && freezeOk
-            }
-            .sortedWith(compareBy<InstalledAppEntry> { it.label.lowercase() }.thenBy { it.userId })
-            .forEach { app ->
-                val isOverridden = hasOverrideInDimensions(state.rules, app.key, selectedSubsystems) ||
-                    ((allSubsystemsSelected || autoFreezeOnly) && app.key in state.autoFreezePkgs)
-                val isNativeHit = isManagedBySystemInDimensions(state.snapshot, app.packageName, selectedSubsystems)
-                val passesScope = when (policyScopeFilter) {
-                    PolicyScopeFilter.ALL -> true
-                    PolicyScopeFilter.OVERRIDDEN -> isOverridden
-                    PolicyScopeFilter.NATIVE_HIT -> isNativeHit
-                    PolicyScopeFilter.MANAGED -> isOverridden || isNativeHit
-                }
-                if (passesScope) {
-                    when {
-                        isOverridden -> overridden.add(app)
-                        isNativeHit -> nativeHits.add(app)
-                        else -> neutral.add(app)
-                    }
-                }
-            }
-
-        GroupedAppSections(
-            overridden = overridden,
-            nativeHits = nativeHits,
-            neutral = neutral,
-        )
-    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -1124,6 +1280,8 @@ private fun AppsTab(
                             isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
                             selectedSubsystems = selectedSubsystems,
+                            selectionMode = selectionMode,
+                            selected = app.key in selectedApps,
                             index = idx,
                             count = groupedApps.overridden.size,
                             modifier = Modifier.animateItem(
@@ -1131,6 +1289,8 @@ private fun AppsTab(
                                 placementSpec = motionScheme.defaultSpatialSpec(),
                                 fadeOutSpec = motionScheme.fastEffectsSpec(),
                             ),
+                            onToggleSelect = onToggleSelect,
+                            onEnterSelectionMode = onEnterSelectionMode,
                             onSetRule = onSetRule,
                             onOpenDetail = onOpenDetail,
                         )
@@ -1157,6 +1317,8 @@ private fun AppsTab(
                                 isAutoFreeze = app.key in state.autoFreezePkgs,
                                 snapshot = state.snapshot,
                                 selectedSubsystems = selectedSubsystems,
+                                selectionMode = selectionMode,
+                                selected = app.key in selectedApps,
                                 index = idx,
                                 count = groupedApps.nativeHits.size,
                                 modifier = Modifier.animateItem(
@@ -1164,6 +1326,8 @@ private fun AppsTab(
                                     placementSpec = motionScheme.defaultSpatialSpec(),
                                     fadeOutSpec = motionScheme.fastEffectsSpec(),
                                 ),
+                                onToggleSelect = onToggleSelect,
+                                onEnterSelectionMode = onEnterSelectionMode,
                                 onSetRule = onSetRule,
                                 onOpenDetail = onOpenDetail,
                             )
@@ -1187,6 +1351,8 @@ private fun AppsTab(
                             isAutoFreeze = app.key in state.autoFreezePkgs,
                             snapshot = state.snapshot,
                             selectedSubsystems = selectedSubsystems,
+                            selectionMode = selectionMode,
+                            selected = app.key in selectedApps,
                             index = idx,
                             count = groupedApps.neutral.size,
                             modifier = Modifier.animateItem(
@@ -1194,6 +1360,8 @@ private fun AppsTab(
                                 placementSpec = motionScheme.defaultSpatialSpec(),
                                 fadeOutSpec = motionScheme.fastEffectsSpec(),
                             ),
+                            onToggleSelect = onToggleSelect,
+                            onEnterSelectionMode = onEnterSelectionMode,
                             onSetRule = onSetRule,
                             onOpenDetail = onOpenDetail,
                         )
@@ -1275,12 +1443,24 @@ private fun AppRowItem(
     isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
     selectedSubsystems: Set<BgSubsystem>,
+    selectionMode: Boolean,
+    selected: Boolean,
     index: Int,
     count: Int,
     modifier: Modifier = Modifier,
+    onToggleSelect: (AppUserKey) -> Unit,
+    onEnterSelectionMode: (AppUserKey) -> Unit,
     onSetRule: (AppUserKey, BgSubsystem, PolicyMode) -> Unit,
     onOpenDetail: (AppUserKey) -> Unit,
 ) {
+    val onRowClick = if (selectionMode) {
+        { onToggleSelect(app.key) }
+    } else {
+        { onOpenDetail(app.key) }
+    }
+    val onRowLongClick = {
+        if (selectionMode) onToggleSelect(app.key) else onEnterSelectionMode(app.key)
+    }
     if (selectedSubsystems.size == 1) {
         val singleSub = selectedSubsystems.first()
         SingleDimensionAppCard(
@@ -1288,11 +1468,14 @@ private fun AppRowItem(
             subsystem = singleSub,
             nativeResolution = snapshot.nativeResolutionFor(app.packageName, singleSub),
             currentMode = pkgRules[singleSub] ?: PolicyMode.FOLLOW_SYSTEM,
+            selectionMode = selectionMode,
+            selected = selected,
             index = index,
             count = count,
             modifier = modifier,
             onModeSelected = { mode -> onSetRule(app.key, singleSub, mode) },
-            onOpenDetail = { onOpenDetail(app.key) },
+            onClick = onRowClick,
+            onLongClick = onRowLongClick,
         )
     } else {
         AllDimensionsAppCard(
@@ -1301,10 +1484,13 @@ private fun AppRowItem(
             isAutoFreeze = isAutoFreeze,
             snapshot = snapshot,
             selectedSubsystems = selectedSubsystems,
+            selectionMode = selectionMode,
+            selected = selected,
             index = index,
             count = count,
             modifier = modifier,
-            onClick = { onOpenDetail(app.key) },
+            onClick = onRowClick,
+            onLongClick = onRowLongClick,
         )
     }
 }
@@ -1316,20 +1502,26 @@ private fun SingleDimensionAppCard(
     subsystem: BgSubsystem,
     nativeResolution: io.github.yukino1111.colorosbgmanager.model.NativeResolution,
     currentMode: PolicyMode,
+    selectionMode: Boolean,
+    selected: Boolean,
     index: Int,
     count: Int,
     modifier: Modifier = Modifier,
     onModeSelected: (PolicyMode) -> Unit,
-    onOpenDetail: () -> Unit,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
 
     SegmentedListItem(
-        onClick = onOpenDetail,
+        selected = selected,
+        onClick = onClick,
+        onLongClick = onLongClick,
         shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
         colors = ListItemDefaults.segmentedColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         modifier = modifier,
@@ -1337,29 +1529,36 @@ private fun SingleDimensionAppCard(
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
         },
         trailingContent = {
-            Box {
-                ModeSelectorPill(
-                    mode = currentMode,
-                    subsystem = subsystem,
-                    onClick = { menuExpanded = true },
+            if (selectionMode) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
                 )
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                ) {
-                    subsystem.supportedModes().forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(strings.policyModeLabel(mode, subsystem)) },
-                            leadingIcon = {
-                                if (currentMode == mode) {
-                                    Icon(Icons.Rounded.Check, contentDescription = null)
-                                }
-                            },
-                            onClick = {
-                                onModeSelected(mode)
-                                menuExpanded = false
-                            },
-                        )
+            } else {
+                Box {
+                    ModeSelectorPill(
+                        mode = currentMode,
+                        subsystem = subsystem,
+                        onClick = { menuExpanded = true },
+                    )
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        subsystem.supportedModes().forEach { mode ->
+                            DropdownMenuItem(
+                                text = { Text(strings.policyModeLabel(mode, subsystem)) },
+                                leadingIcon = {
+                                    if (currentMode == mode) {
+                                        Icon(Icons.Rounded.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    onModeSelected(mode)
+                                    menuExpanded = false
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -1413,10 +1612,13 @@ private fun AllDimensionsAppCard(
     isAutoFreeze: Boolean,
     snapshot: SystemSnapshot,
     selectedSubsystems: Set<BgSubsystem>,
+    selectionMode: Boolean,
+    selected: Boolean,
     index: Int,
     count: Int,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
     val overrides = remember(pkgRules, selectedSubsystems) {
@@ -1434,20 +1636,32 @@ private fun AllDimensionsAppCard(
     }
 
     SegmentedListItem(
+        selected = selected,
         onClick = onClick,
+        onLongClick = onLongClick,
         shapes = ListItemDefaults.segmentedShapes(index = index, count = count),
         colors = ListItemDefaults.segmentedColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         modifier = modifier,
         leadingContent = {
             DrawableIcon(app.icon, modifier = Modifier.size(40.dp))
         },
-        trailingContent = if (app.isSystem) {
-            { StatusPill(text = strings.systemTag, active = false) }
-        } else {
-            null
+        trailingContent = when {
+            selectionMode -> {
+                {
+                    Checkbox(
+                        checked = selected,
+                        onCheckedChange = null,
+                    )
+                }
+            }
+            app.isSystem -> {
+                { StatusPill(text = strings.systemTag, active = false) }
+            }
+            else -> null
         },
         supportingContent = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1516,6 +1730,61 @@ private fun AllDimensionsAppCard(
             }
         },
     )
+}
+
+@Composable
+private fun PresetActionRow(
+    allowPreset: Set<BgSubsystem>,
+    restrictPreset: Set<BgSubsystem>,
+    onApplyPreset: (Set<BgSubsystem>, PolicyMode) -> Unit,
+    onUpdatePreset: (Boolean, Set<BgSubsystem>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val strings = LocalAppStrings.current
+    var editingPresetIsAllow by remember { mutableStateOf<Boolean?>(null) }
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        PresetSplitButton(
+            label = "${strings.allowPreset} (${allowPreset.size})",
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            moreCd = strings.presetMoreCd,
+            onApply = { onApplyPreset(allowPreset, PolicyMode.FORCE_ALLOW) },
+            onOpenConfig = { editingPresetIsAllow = true },
+            modifier = Modifier.weight(1f),
+        )
+        PresetSplitButton(
+            label = "${strings.restrictPreset} (${restrictPreset.size})",
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            moreCd = strings.presetMoreCd,
+            onApply = { onApplyPreset(restrictPreset, PolicyMode.FORCE_RESTRICT) },
+            onOpenConfig = { editingPresetIsAllow = false },
+            modifier = Modifier.weight(1f),
+        )
+    }
+    editingPresetIsAllow?.let { isAllow ->
+        PresetConfigDialog(
+            isAllow = isAllow,
+            initialSelection = if (isAllow) allowPreset else restrictPreset,
+            onDismiss = { editingPresetIsAllow = null },
+            onSave = { selected ->
+                onUpdatePreset(isAllow, selected)
+                editingPresetIsAllow = null
+            },
+            onSaveAndApply = { selected ->
+                onUpdatePreset(isAllow, selected)
+                onApplyPreset(
+                    selected,
+                    if (isAllow) PolicyMode.FORCE_ALLOW else PolicyMode.FORCE_RESTRICT,
+                )
+                editingPresetIsAllow = null
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -1800,46 +2069,12 @@ private fun AppDetailPage(
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        var editingPresetIsAllow by remember { mutableStateOf<Boolean?>(null) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PresetSplitButton(
-                                label = "${strings.allowPreset} (${state.allowPreset.size})",
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary,
-                                moreCd = strings.presetMoreCd,
-                                onApply = { onApplyPreset(state.allowPreset, PolicyMode.FORCE_ALLOW) },
-                                onOpenConfig = { editingPresetIsAllow = true },
-                                modifier = Modifier.weight(1f),
-                            )
-                            PresetSplitButton(
-                                label = "${strings.restrictPreset} (${state.restrictPreset.size})",
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                                moreCd = strings.presetMoreCd,
-                                onApply = { onApplyPreset(state.restrictPreset, PolicyMode.FORCE_RESTRICT) },
-                                onOpenConfig = { editingPresetIsAllow = false },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        editingPresetIsAllow?.let { isAllow ->
-                            PresetConfigDialog(
-                                isAllow = isAllow,
-                                initialSelection = if (isAllow) state.allowPreset else state.restrictPreset,
-                                onDismiss = { editingPresetIsAllow = null },
-                                onSave = { selected ->
-                                    onUpdatePreset(isAllow, selected)
-                                    editingPresetIsAllow = null
-                                },
-                                onSaveAndApply = { selected ->
-                                    onUpdatePreset(isAllow, selected)
-                                    onApplyPreset(
-                                        selected,
-                                        if (isAllow) PolicyMode.FORCE_ALLOW else PolicyMode.FORCE_RESTRICT,
-                                    )
-                                    editingPresetIsAllow = null
-                                },
-                            )
-                        }
+                        PresetActionRow(
+                            allowPreset = state.allowPreset,
+                            restrictPreset = state.restrictPreset,
+                            onApplyPreset = onApplyPreset,
+                            onUpdatePreset = onUpdatePreset,
+                        )
 
                         BgSubsystem.entries.forEach { sub ->
                             HorizontalDivider(

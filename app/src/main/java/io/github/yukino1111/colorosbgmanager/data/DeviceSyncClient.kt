@@ -451,18 +451,54 @@ class DeviceSyncClient private constructor(private val context: Context) {
     }
 
     fun applyPresetForPackage(target: AppUserKey, subsystems: Set<BgSubsystem>, mode: PolicyMode) {
+        applyPresetForPackages(setOf(target), subsystems, mode, showToast = false)
+    }
+
+    fun applyPresetForPackages(
+        targets: Set<AppUserKey>,
+        subsystems: Set<BgSubsystem>,
+        mode: PolicyMode,
+        showToast: Boolean = true,
+    ): Boolean {
+        val strings = stringsFor(_state.value.language)
+        if (targets.isEmpty()) {
+            postMessage(strings.selectAtLeastOneApp)
+            return false
+        }
         if (subsystems.isEmpty()) {
-            postMessage(stringsFor(_state.value.language).presetEmptyWarning)
-            return
+            postMessage(strings.presetEmptyWarning)
+            return false
         }
-        commitRules { map ->
-            val pkgMap = (map[target]?.toMutableMap() ?: mutableMapOf()).apply {
-                subsystems.forEach { sub ->
-                    if (mode == PolicyMode.FOLLOW_SYSTEM) remove(sub) else put(sub, mode)
+        val committed = commitRules { map ->
+            targets.forEach { target ->
+                val pkgMap = (map[target]?.toMutableMap() ?: mutableMapOf()).apply {
+                    subsystems.forEach { sub ->
+                        if (mode == PolicyMode.FOLLOW_SYSTEM) remove(sub) else put(sub, mode)
+                    }
                 }
+                if (pkgMap.isEmpty()) map.remove(target) else map[target] = pkgMap
             }
-            if (pkgMap.isEmpty()) map.remove(target) else map[target] = pkgMap
         }
+        if (committed && showToast) {
+            val presetName = if (mode == PolicyMode.FORCE_ALLOW) strings.allowPreset else strings.restrictPreset
+            postMessage(strings.toastBatchPresetApplied(targets.size, presetName))
+        }
+        return committed
+    }
+
+    fun resetPackagesToDefault(targets: Set<AppUserKey>): Boolean {
+        val strings = stringsFor(_state.value.language)
+        if (targets.isEmpty()) {
+            postMessage(strings.selectAtLeastOneApp)
+            return false
+        }
+        val committed = commitRules { map ->
+            targets.forEach { map.remove(it) }
+        }
+        if (committed) {
+            postMessage(strings.toastBatchResetOk(targets.size))
+        }
+        return committed
     }
 
     fun resetAllAppRules() {
