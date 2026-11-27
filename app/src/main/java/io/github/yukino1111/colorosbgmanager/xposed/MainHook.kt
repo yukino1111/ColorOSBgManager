@@ -102,6 +102,7 @@ class MainHook : XposedModule() {
     private var getHansPkgNameMethod: Method? = null
     private var getHansUidMethod: Method? = null
     private var processRecordAppInfoMethod: Method? = null
+    private var processRecordPkgNameMethod: Method? = null
     private var processRecordHostingMethod: Method? = null
     private var hostingGetTypeMethod: Method? = null
     private var processInfoGetPkgMethod: Method? = null
@@ -941,21 +942,22 @@ class MainHook : XposedModule() {
                     }
                 }
             }
-            listOf(
+            val whitelistPkgMethods = setOf(
                 "getFullPowerWhitelistInternal",
+                "getFullPowerWhitelistInternalUnchecked",
                 "getFullPowerWhitelistExceptIdleInternal",
                 "getUserPowerWhitelistInternal",
-            ).forEach { methodName ->
-                runCatching {
-                    val m = idleClass.getDeclaredMethod(methodName)
-                    if (m.returnType == Array<String>::class.java) {
+            )
+            idleClass.declaredMethods
+                .filter { it.name in whitelistPkgMethods && it.returnType == Array<String>::class.java }
+                .forEach { m ->
+                    runCatching {
                         hook(m).intercept { chain ->
                             val orig = chain.proceed() as? Array<*> ?: return@intercept null
                             adjustDozePackages(orig)
                         }
                     }
                 }
-            }
             runCatching {
                 val updateMethod = idleClass.getDeclaredMethod("updateWhitelistAppIdsLocked")
                 hook(updateMethod).intercept { chain ->
@@ -1057,51 +1059,66 @@ class MainHook : XposedModule() {
             val athenaClass = cl.loadClass("com.android.server.am.OplusAthenaAmManager")
             val prClass = cl.loadClass("com.android.server.am.ProcessRecord")
 
-            hook(athenaClass.getDeclaredMethod("skipCacheEmptyKill", prClass)).intercept { chain ->
-                val pr = chain.getArg(0)
-                val pkg = extractProcessRecordPkg(pr)
-                val userId = extractProcessRecordUserId(pr)
-                when (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT)) {
-                    PolicyMode.FORCE_ALLOW -> {
-                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "skipCacheEmptyKill", userId)
-                        true
+            runCatching {
+                val skipMethods = athenaClass.declaredMethods.filter {
+                    it.name == "skipCacheEmptyKill" && it.parameterTypes.size == 1
+                }
+                skipMethods.forEach { m ->
+                    hook(m).intercept { chain ->
+                        val pr = chain.getArg(0)
+                        val pkg = extractProcessRecordPkg(pr)
+                        val userId = extractProcessRecordUserId(pr)
+                        when (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT)) {
+                            PolicyMode.FORCE_ALLOW -> {
+                                recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "skipCacheEmptyKill", userId)
+                                true
+                            }
+                            PolicyMode.FORCE_RESTRICT,
+                            PolicyMode.FORCE_RESTRICT_HBG -> false
+                            PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
+                        }
                     }
-                    PolicyMode.FORCE_RESTRICT,
-                    PolicyMode.FORCE_RESTRICT_HBG -> false
-                    PolicyMode.FOLLOW_SYSTEM -> chain.proceed()
                 }
-            }
+                if (skipMethods.isNotEmpty()) anyOk = true
+            }.onFailure { log(Log.ERROR, TAG, "Hook OplusAthenaAmManager.skipCacheEmptyKill failed", it) }
 
-            hook(athenaClass.getDeclaredMethod("doProactiveClean", prClass, Int::class.javaPrimitiveType)).intercept { chain ->
-                val pr = chain.getArg(0)
-                val pkg = extractProcessRecordPkg(pr)
-                val userId = extractProcessRecordUserId(pr)
-                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "doProactiveClean", userId)
-                    return@intercept null
+            runCatching {
+                hook(athenaClass.getDeclaredMethod("doProactiveClean", prClass, Int::class.javaPrimitiveType)).intercept { chain ->
+                    val pr = chain.getArg(0)
+                    val pkg = extractProcessRecordPkg(pr)
+                    val userId = extractProcessRecordUserId(pr)
+                    if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_clean", "doProactiveClean", userId)
+                        return@intercept null
+                    }
+                    chain.proceed()
                 }
-                chain.proceed()
-            }
+                anyOk = true
+            }.onFailure { log(Log.ERROR, TAG, "Hook OplusAthenaAmManager.doProactiveClean failed", it) }
 
-            hook(
-                athenaClass.getDeclaredMethod(
-                    "forceStopPackage",
-                    String::class.java,
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType,
-                    String::class.java,
-                    String::class.java,
-                )
-            ).intercept { chain ->
-                val pkg = chain.getArg(0) as? String
-                val userId = chain.getArg(1) as Int
-                if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
-                    recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_forcestop", chain.getArg(4) as? String ?: "", userId)
-                    return@intercept null
+            runCatching {
+                hook(
+                    athenaClass.getDeclaredMethod(
+                        "forceStopPackage",
+                        String::class.java,
+                        Int::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType,
+                        Int::class.javaPrimitiveType,
+                        String::class.java,
+                        String::class.java,
+                    )
+                ).intercept { chain ->
+                    val pkg = chain.getArg(0) as? String
+                    val userId = chain.getArg(1) as Int
+                    if (modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                        recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_athena_forcestop", chain.getArg(4) as? String ?: "", userId)
+                        return@intercept null
+                    }
+                    chain.proceed()
                 }
-                chain.proceed()
-            }
+                anyOk = true
+            }.onFailure { log(Log.ERROR, TAG, "Hook OplusAthenaAmManager.forceStopPackage failed", it) }
+
             hookPkgBool(
                 athenaClass,
                 "isAuthScopeProtectProc",
@@ -1529,6 +1546,15 @@ class MainHook : XposedModule() {
         runCatching {
             val listMgrClass = cl.loadClass("com.android.server.OplusListManagerImpl")
             hookPkgBool(listMgrClass, "isSkipBroadcastFlagRestricted", String::class.java, sub = BgSubsystem.BROADCAST_RESTRICT)
+            hookPkgBool(
+                listMgrClass,
+                "isSkipBroadcastFlagRestricted",
+                Int::class.javaPrimitiveType!!,
+                String::class.java,
+                ApplicationInfo::class.java,
+                sub = BgSubsystem.BROADCAST_RESTRICT,
+                pkgArgIdx = 1,
+            )
             anyOk = true
         }.onFailure { log(Log.ERROR, TAG, "Hook OplusListManagerImpl broadcast failed", it) }
 
@@ -1827,6 +1853,9 @@ class MainHook : XposedModule() {
     private fun applyInMemoryDozeAppIds(dic: Any?) {
         if (dic == null) return
         val fieldNames = listOf(
+            "mPowerSaveWhitelistAllAppIdArray",
+            "mPowerSaveWhitelistExceptIdleAppIdArray",
+            "mPowerSaveWhitelistUserAppIdArray",
             "mPowerSaveWhitelistAllAppIds",
             "mPowerSaveWhitelistExceptIdleAppIds",
             "mPowerSaveWhitelistUserAppIds",
@@ -1837,7 +1866,7 @@ class MainHook : XposedModule() {
             val orig = runCatching { field.get(dic) as? IntArray }.getOrNull() ?: continue
             val adjusted = adjustDozeAppIds(orig)
             runCatching { field.set(dic, adjusted) }
-            if (name == "mPowerSaveWhitelistAllAppIds") {
+            if (name == "mPowerSaveWhitelistAllAppIdArray" || name == "mPowerSaveWhitelistAllAppIds") {
                 adjustedAll = adjusted
             }
         }
@@ -1998,7 +2027,10 @@ class MainHook : XposedModule() {
             PolicyMode.FOLLOW_SYSTEM -> if (dic != null) {
                 runCatching {
                     val userMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistUserApps")?.get(dic) as? Map<*, *>
-                    val sysMap = findDeclaredField(dic.javaClass, "mPowerSaveWhitelistSystemApps")?.get(dic) as? Map<*, *>
+                    val sysMap = (
+                        findDeclaredField(dic.javaClass, "mPowerSaveWhitelistSystemApps")
+                            ?: findDeclaredField(dic.javaClass, "mPowerSaveWhitelistApps")
+                        )?.get(dic) as? Map<*, *>
                     (userMap?.containsKey(pkg) == true) || (sysMap?.containsKey(pkg) == true)
                 }.getOrDefault(false)
             } else {
@@ -2215,8 +2247,13 @@ class MainHook : XposedModule() {
         if (obj == null) return null
         val m = processRecordAppInfoMethod ?: runCatching {
             obj.javaClass.getMethod("getApplicationInfo").also { processRecordAppInfoMethod = it }
+        }.getOrNull()
+        val appPkg = runCatching { (m?.invoke(obj) as? ApplicationInfo)?.packageName }.getOrNull()
+        if (!appPkg.isNullOrEmpty()) return appPkg
+        val pkgMethod = processRecordPkgNameMethod ?: runCatching {
+            obj.javaClass.getMethod("getPackageName").also { processRecordPkgNameMethod = it }
         }.getOrNull() ?: return null
-        return runCatching { (m.invoke(obj) as? ApplicationInfo)?.packageName }.getOrNull()
+        return runCatching { pkgMethod.invoke(obj) as? String }.getOrNull()
     }
 
     private fun extractProcessRecordUserId(obj: Any?): Int {

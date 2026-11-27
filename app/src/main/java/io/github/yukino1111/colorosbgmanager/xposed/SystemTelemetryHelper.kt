@@ -225,7 +225,10 @@ internal object SystemTelemetryHelper {
     }
 
     private fun extractServiceApp(sr: Any): Any? {
-        val f = serviceRecordAppField ?: findDeclaredField(sr.javaClass, "app")?.also { serviceRecordAppField = it }
+        val f = serviceRecordAppField
+            ?: (findDeclaredField(sr.javaClass, "app")
+                ?: findDeclaredField(sr.javaClass, "mHostProcess"))
+                ?.also { serviceRecordAppField = it }
         return runCatching { f?.get(sr) }.getOrNull()
     }
 
