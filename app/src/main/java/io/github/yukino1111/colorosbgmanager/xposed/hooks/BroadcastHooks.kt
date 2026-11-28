@@ -82,7 +82,7 @@ internal object BroadcastHooks {
                 }
             }
 
-        val prClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ProcessRecord", scope, required = false)
+        val prClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ProcessRecord", scope)
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.am.OplusBroadcastRestriction\$Restriction", scope, required = true)
             ?.let { restrictionBaseClass ->

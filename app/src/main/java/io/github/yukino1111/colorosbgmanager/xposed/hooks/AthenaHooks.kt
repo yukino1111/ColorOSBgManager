@@ -25,7 +25,14 @@ internal object AthenaHooks {
                         clazz = athenaClass,
                         methodName = "skipCacheEmptyKill",
                         required = true,
-                        predicate = { it.name == "skipCacheEmptyKill" && it.parameterTypes.size == 1 },
+                        predicate = {
+                            it.name == "skipCacheEmptyKill" && it.parameterCount == 1 &&
+                                it.returnType == Boolean::class.javaPrimitiveType &&
+                                it.parameterTypes[0].name.let { name ->
+                                    name == "com.android.server.am.ProcessRecord" ||
+                                        name == "com.android.server.am.psc.ProcessRecordInternal"
+                                }
+                        },
                     ) { _, chain ->
                         val pr = chain.getArg(0)
                         val pkg = SystemObjectAdapters.extractProcessPkg(pr)
@@ -178,6 +185,24 @@ internal object AthenaHooks {
                     ) {
                         anyOk = true
                     }
+                }
+
+                if (HookSupport.hookSingle(
+                        host, scope, osenseKillClass, "getSkipReasonForCheckOomAdj",
+                        killCtxClass, piClass, Long::class.javaPrimitiveType!!, required = false,
+                    ) { chain ->
+                        val info = chain.getArg(1)
+                        val pkg = SystemObjectAdapters.extractOsenseProcInfoPkg(info)
+                        val userId = SystemObjectAdapters.extractOsenseProcInfoUserId(info)
+                        if (host.modeFor(pkg, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW) {
+                            SystemObjectAdapters.setOsenseSkipReason(info, SKIP_REASON_ALLOW)
+                            host.recordEvent(pkg, BgSubsystem.ATHENA_RECENT, "skip_nirvana", "oom-adj", userId)
+                            return@hookSingle SKIP_REASON_ALLOW
+                        }
+                        chain.proceed()
+                    }
+                ) {
+                    anyOk = true
                 }
 
                 if (killCtxClass != null && pgClass != null && gameExtClass != null) {

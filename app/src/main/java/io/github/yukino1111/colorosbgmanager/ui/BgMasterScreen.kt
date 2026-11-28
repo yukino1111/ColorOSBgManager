@@ -1037,7 +1037,7 @@ private fun DashboardTab(
         }
     }
 
-    if (showDiagnosticsDialog) {
+    if (showDiagnosticsDialog && state.snapshot.serverInjected && state.snapshot.hookDiagnostics.isNotEmpty()) {
         HookDiagnosticsDialog(
             state = state,
             onDismiss = { showDiagnosticsDialog = false },

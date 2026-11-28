@@ -14,8 +14,8 @@ internal object CpuLimitHooks {
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.am.OplusCpuLimitManager", scope, required = true)
             ?.let { cpuClass ->
-                val prClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ProcessRecord", scope, required = false)
-                val piClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.cpulimit.ProcessInfo", scope, required = false)
+                val prClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ProcessRecord", scope)
+                val piClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.cpulimit.ProcessInfo", scope)
 
                 if (prClass != null) {
                     if (HookSupport.hookSingle(

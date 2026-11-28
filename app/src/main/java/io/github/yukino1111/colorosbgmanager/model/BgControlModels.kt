@@ -427,6 +427,14 @@ data class SystemSnapshot(
                 appendLine("  - [${entry.scopeKey}][OPT] ${entry.target} -> ${entry.status.code}$suffix")
             }
         }
+        val fallbacks = hookDiagnostics.filter { it.status == HookPointStatus.FALLBACK }
+        if (fallbacks.isNotEmpty()) {
+            appendLine("Fallback Hooks (${fallbacks.size}):")
+            fallbacks.forEach { entry ->
+                val suffix = if (entry.detail.isNotBlank()) " | ${entry.detail}" else ""
+                appendLine("  - [${entry.scopeKey}] ${entry.target}$suffix")
+            }
+        }
         val totalNative = lists.values.sumOf { it.size }
         appendLine("Native Lists: ${lists.count { it.value.isNotEmpty() }}/${NativeListKind.entries.size} non-empty, $totalNative total entries")
     }.trimEnd()

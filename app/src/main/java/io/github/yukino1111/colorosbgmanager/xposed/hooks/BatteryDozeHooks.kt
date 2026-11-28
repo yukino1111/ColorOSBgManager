@@ -1,6 +1,8 @@
 package io.github.yukino1111.colorosbgmanager.xposed.hooks
 
+import android.util.ArrayMap
 import android.util.Log
+import android.util.SparseBooleanArray
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.HookDiagnosticEntry
 import io.github.yukino1111.colorosbgmanager.model.HookPointStatus
@@ -18,6 +20,7 @@ internal object BatteryDozeHooks {
     fun install(host: HookHost, cl: ClassLoader): Boolean {
         val scope = BgSubsystem.BATTERY_DOZE.key
         var anyOk = false
+        var appIdBuilderHooked = false
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.hans.oguard.policy.AppPowerPolicy", scope, required = true)
             ?.let { policyClass ->
@@ -245,6 +248,13 @@ internal object BatteryDozeHooks {
                     "getFullPowerWhitelistExceptIdleInternal",
                     "getUserPowerWhitelistInternal",
                 )
+                val packageManagerField = SystemObjectAdapters.findDeclaredField(idleClass, "mPackageManagerInternal")
+                val visibilityFilter = packageManagerField?.let {
+                    SystemObjectAdapters.findDeclaredMethod(
+                        it.type, "filterAppAccess", String::class.java,
+                        Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!,
+                    )
+                }
                 if (HookSupport.hookAllMatching(
                         host = host,
                         scopeKey = scope,
@@ -253,15 +263,43 @@ internal object BatteryDozeHooks {
                         required = true,
                         targetLabel = "DeviceIdleController#getPowerWhitelistStrings",
                         predicate = {
-                            it.name in whitelistPkgMethods && it.returnType == Array<String>::class.java
+                            val params = it.parameterTypes
+                            it.name in whitelistPkgMethods && it.returnType == Array<String>::class.java &&
+                                (params.isEmpty() || (
+                                    params.size == 2 && params[0] == Int::class.javaPrimitiveType &&
+                                        params[1] == Int::class.javaPrimitiveType
+                                    ))
                         },
-                    ) { _, chain ->
+                    ) { method, chain ->
                         val orig = chain.proceed() as? Array<*> ?: return@hookAllMatching null
-                        host.adjustDozePackages(orig)
+                        if (method.parameterCount == 0) {
+                            host.adjustDozePackages(orig)
+                        } else {
+                            val callingUid = chain.getArg(0) as Int
+                            val callingUserId = chain.getArg(1) as Int
+                            val pm = runCatching { packageManagerField?.get(chain.thisObject) }.getOrNull()
+                            // Do not add a name the ROM filtered for this caller.
+                            host.adjustDozePackages(orig) { pkg ->
+                                pkg in orig || (pm != null && visibilityFilter != null && runCatching {
+                                    visibilityFilter.invoke(pm, pkg, callingUid, callingUserId) == false
+                                }.getOrDefault(false))
+                            }
+                        }
                     }
                 ) {
                     anyOk = true
                 }
+
+                // Newer ROMs publish the arrays to ActivityManager and standby before update returns.
+                appIdBuilderHooked = HookSupport.hookSingle(
+                    host, scope, idleClass, "buildAppIdArray",
+                    ArrayMap::class.java, ArrayMap::class.java, SparseBooleanArray::class.java,
+                    required = false,
+                ) { chain ->
+                    val orig = chain.proceed() as? IntArray ?: return@hookSingle null
+                    host.adjustDozeAppIds(orig)
+                }
+                if (appIdBuilderHooked) anyOk = true
 
                 if (HookSupport.hookSingle(
                         host = host,
@@ -272,7 +310,7 @@ internal object BatteryDozeHooks {
                     ) { chain ->
                         if (host.deviceIdleController == null) host.deviceIdleController = chain.thisObject
                         val result = chain.proceed()
-                        applyInMemoryDozeAppIds(host, chain.thisObject)
+                        if (!appIdBuilderHooked) applyInMemoryDozeAppIds(host, chain.thisObject)
                         result
                     }
                 ) {
@@ -280,25 +318,27 @@ internal object BatteryDozeHooks {
                 }
             }
 
-        HookSupport.loadClassOrNull(host, cl, "com.android.server.power.PowerManagerService\$LocalService", scope, required = false)
-            ?.let { pmsLocalClass ->
-                val ok = HookSupport.hookSingle(
-                    host = host,
-                    scopeKey = scope,
-                    clazz = pmsLocalClass,
-                    methodName = "setDeviceIdleWhitelist",
-                    IntArray::class.java,
-                    required = false,
-                ) { chain ->
-                    val orig = chain.getArg(0) as? IntArray
-                    if (orig != null) {
-                        chain.proceed(arrayOf(host.adjustDozeAppIds(orig)))
-                    } else {
-                        chain.proceed()
+        if (!appIdBuilderHooked) {
+            HookSupport.loadClassOrNull(host, cl, "com.android.server.power.PowerManagerService\$LocalService", scope, required = false)
+                ?.let { pmsLocalClass ->
+                    val ok = HookSupport.hookSingle(
+                        host = host,
+                        scopeKey = scope,
+                        clazz = pmsLocalClass,
+                        methodName = "setDeviceIdleWhitelist",
+                        IntArray::class.java,
+                        required = false,
+                    ) { chain ->
+                        val orig = chain.getArg(0) as? IntArray
+                        if (orig != null) {
+                            chain.proceed(arrayOf(host.adjustDozeAppIds(orig)))
+                        } else {
+                            chain.proceed()
+                        }
                     }
+                    host.powerWhitelistHooked = ok
                 }
-                host.powerWhitelistHooked = ok
-            }
+        }
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.usage.AppStandbyController", scope, required = false)
             ?.let { standbyClass ->
@@ -352,15 +392,17 @@ internal object BatteryDozeHooks {
                         methodName = "isAppIdleFiltered",
                         required = true,
                         predicate = { m ->
-                            m.name == "isAppIdleFiltered" &&
-                                m.parameterTypes.size == 4 &&
-                                m.parameterTypes[0] == String::class.java &&
-                                m.parameterTypes[1] == Int::class.javaPrimitiveType
+                            val params = m.parameterTypes
+                            m.name == "isAppIdleFiltered" && m.returnType == Boolean::class.javaPrimitiveType &&
+                                params.size == 4 && params[0] == String::class.java &&
+                                params[1] == Int::class.javaPrimitiveType &&
+                                ((params[2] == Int::class.javaPrimitiveType && params[3] == Long::class.javaPrimitiveType) ||
+                                    (params[2] == Long::class.javaPrimitiveType && params[3] == Boolean::class.javaPrimitiveType))
                         },
-                    ) { _, chain ->
+                    ) { method, chain ->
                         val pkg = chain.getArg(0) as? String
-                        val rawId = chain.getArg(1) as Int
-                        val userId = if (rawId >= 10000) MultiUserPackageHelper.userIdOfUid(rawId) else rawId
+                        val userArg = if (method.parameterTypes[2] == Int::class.javaPrimitiveType) 2 else 1
+                        val userId = chain.getArg(userArg) as Int
                         when (host.modeFor(pkg, userId, BgSubsystem.BATTERY_DOZE)) {
                             PolicyMode.FORCE_ALLOW -> false
                             PolicyMode.FORCE_RESTRICT,

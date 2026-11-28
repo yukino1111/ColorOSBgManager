@@ -40,7 +40,7 @@ internal interface HookHost {
     fun resolveAppIdForPkg(pkg: String): Int
     fun resolveDozeModeForAppId(appId: Int): PolicyMode
     fun adjustDozeAppIds(orig: IntArray?): IntArray
-    fun adjustDozePackages(orig: Array<*>?): Array<String>
+    fun adjustDozePackages(orig: Array<*>?, canAdd: (String) -> Boolean = { true }): Array<String>
     fun forceStopPackageDirect(pkg: String, userId: Int): Boolean
     fun scheduleBatteryDozeSync()
     fun scheduleAutoFreezeCheck(pkg: String, userId: Int, delayMs: Long)
@@ -61,16 +61,8 @@ internal class HookDiagnosticsRegistry {
     fun snapshot(): List<HookDiagnosticEntry> =
         entries.values.sortedWith(compareBy<HookDiagnosticEntry> { it.scopeKey }.thenBy { it.target })
 
-    fun isScopeActive(scopeKey: String): Boolean {
-        val scoped = entries.values.filter { it.scopeKey == scopeKey }
-        if (scoped.isEmpty()) return false
-        val required = scoped.filter { it.required }
-        return if (required.isNotEmpty()) {
-            required.any { it.status.isOk }
-        } else {
-            scoped.any { it.status.isOk }
-        }
-    }
+    fun isScopeActive(scopeKey: String): Boolean =
+        entries.values.any { it.scopeKey == scopeKey && it.status.isOk }
 }
 
 internal object HookSupport {
@@ -102,34 +94,29 @@ internal object HookSupport {
         scopeKey: String,
         clazz: Class<*>,
         methodName: String,
-        vararg paramTypes: Class<*>,
+        vararg paramTypes: Class<*>?,
         required: Boolean = true,
-        targetLabel: String = "${clazz.simpleName}#$methodName",
+        targetLabel: String = "${clazz.simpleName}#$methodName(${formatParams(paramTypes)})",
         block: (XposedInterface.Chain) -> Any?,
     ): Boolean {
-        val method = runCatching {
-            clazz.getDeclaredMethod(methodName, *paramTypes)
-        }.getOrNull()
-        if (method == null) {
-            val detail = describeAvailableMethods(clazz, methodName)
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.MISSING_METHOD, detail),
-            )
-            host.logMsg(if (required) Log.ERROR else Log.WARN, "Missing method $targetLabel: $detail")
+        if (paramTypes.any { it == null }) {
+            val detail = "Parameter class unavailable; see class lookup diagnostics"
+            host.recordDiagnostic(HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.MISSING_CLASS, detail))
             return false
         }
-        return runCatching {
-            host.interceptMethod(method, block)
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.HOOKED, formatParams(method)),
-            )
-            true
-        }.onFailure { tr ->
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.ERROR, tr.message.orEmpty()),
-            )
-            host.logMsg(Log.ERROR, "Hook failed $targetLabel", tr)
-        }.getOrDefault(false)
+        val method = try {
+            @Suppress("UNCHECKED_CAST") // Null elements were rejected above.
+            clazz.getDeclaredMethod(methodName, *(paramTypes as Array<out Class<*>>))
+        } catch (_: NoSuchMethodException) {
+            val detail = runCatching { describeAvailableMethods(clazz.declaredMethods, methodName) }
+                .getOrElse { "Cannot enumerate signatures: ${describeError(it)}" }
+            reportMissingMethod(host, scopeKey, targetLabel, required, detail)
+            return false
+        } catch (tr: Throwable) {
+            reportHookError(host, scopeKey, targetLabel, required, tr)
+            return false
+        }
+        return registerMethod(host, scopeKey, targetLabel, required, method, block = block)
     }
 
     fun hookAllMatching(
@@ -142,36 +129,26 @@ internal object HookSupport {
         predicate: (Method) -> Boolean = { it.name == methodName },
         block: (Method, XposedInterface.Chain) -> Any?,
     ): Boolean {
-        val matched = clazz.declaredMethods.filter(predicate)
-        if (matched.isEmpty()) {
-            val detail = describeAvailableMethods(clazz, methodName)
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.MISSING_METHOD, detail),
-            )
-            host.logMsg(if (required) Log.WARN else Log.INFO, "No matching method for $targetLabel: $detail")
+        val methods = runCatching { clazz.declaredMethods }.getOrElse { tr ->
+            reportHookError(host, scopeKey, targetLabel, required, tr)
             return false
         }
-        var hookedCount = 0
-        var lastError: Throwable? = null
-        matched.forEach { method ->
-            runCatching {
-                host.interceptMethod(method) { chain -> block(method, chain) }
-                hookedCount++
-            }.onFailure { lastError = it }
+        val matched = runCatching { methods.filter(predicate) }.getOrElse { tr ->
+            reportHookError(host, scopeKey, targetLabel, required, tr)
+            return false
         }
-        return if (hookedCount > 0) {
-            val detail = matched.joinToString("; ") { "${it.name}(${formatParams(it)})" }
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.HOOKED, detail),
-            )
-            true
-        } else {
-            host.recordDiagnostic(
-                HookDiagnosticEntry(scopeKey, targetLabel, required, HookPointStatus.ERROR, lastError?.message.orEmpty()),
-            )
-            host.logMsg(Log.ERROR, "Hook failed $targetLabel", lastError)
-            false
+        if (matched.isEmpty()) {
+            reportMissingMethod(host, scopeKey, targetLabel, required, describeAvailableMethods(methods, methodName))
+            return false
         }
+        var anyHooked = false
+        for (method in matched) {
+            val signature = "${clazz.simpleName}#${formatSignature(method)}"
+            if (registerMethod(host, scopeKey, signature, required, method) { chain -> block(method, chain) }) {
+                anyHooked = true
+            }
+        }
+        return anyHooked
     }
 
     fun hookPkgBool(
@@ -207,48 +184,38 @@ internal object HookSupport {
         required: Boolean = true,
     ): Boolean {
         val targetLabel = "${clazz.simpleName}#$methodName"
-        var hookedCount = 0
-        var firstVariantHooked = false
-        val matchedSigs = ArrayList<String>()
-        var lastError: Throwable? = null
-
-        variants.forEachIndexed { idx, variant ->
-            val method = runCatching {
+        var anyHooked = false
+        var foundOrErrored = false
+        for ((index, variant) in variants.withIndex()) {
+            val signature = "$targetLabel(${formatParams(variant.paramTypes)})"
+            val method = try {
                 clazz.getDeclaredMethod(methodName, *variant.paramTypes)
-            }.getOrNull() ?: return@forEachIndexed
-
-            runCatching {
-                host.interceptMethod(method) { chain ->
+            } catch (_: NoSuchMethodException) {
+                // Absent alternative signatures are expected across ROM versions.
+                continue
+            } catch (tr: Throwable) {
+                foundOrErrored = true
+                reportHookError(host, sub.key, signature, required, tr)
+                continue
+            }
+            foundOrErrored = true
+            val status = if (index > 0 && !anyHooked) HookPointStatus.FALLBACK else HookPointStatus.HOOKED
+            if (registerMethod(host, sub.key, signature, required, method, status) { chain ->
                     interceptPkgBool(
-                        host = host,
-                        chain = chain,
-                        sub = sub,
-                        methodName = methodName,
-                        invert = invert,
-                        pkgArgIdx = variant.pkgArgIdx,
-                        userIdArgIdx = variant.userIdArgIdx,
-                        restrictEventAction = restrictEventAction,
+                        host, chain, sub, methodName, invert,
+                        variant.pkgArgIdx, variant.userIdArgIdx, restrictEventAction,
                     )
                 }
-                hookedCount++
-                if (idx == 0) firstVariantHooked = true
-                matchedSigs.add("(${formatParams(method)})")
-            }.onFailure { lastError = it }
+            ) {
+                anyHooked = true
+            }
         }
-
-        return if (hookedCount > 0) {
-            val status = if (firstVariantHooked) HookPointStatus.HOOKED else HookPointStatus.FALLBACK
-            host.recordDiagnostic(
-                HookDiagnosticEntry(sub.key, targetLabel, required, status, matchedSigs.joinToString("; ")),
-            )
-            true
-        } else {
-            val detail = lastError?.message ?: describeAvailableMethods(clazz, methodName)
-            val status = if (lastError != null) HookPointStatus.ERROR else HookPointStatus.MISSING_METHOD
-            host.recordDiagnostic(HookDiagnosticEntry(sub.key, targetLabel, required, status, detail))
-            host.logMsg(if (required) Log.ERROR else Log.WARN, "Variant hook miss $targetLabel: $detail", lastError)
-            false
+        if (!foundOrErrored) {
+            val detail = runCatching { describeAvailableMethods(clazz.declaredMethods, methodName) }
+                .getOrElse { "Cannot enumerate signatures: ${describeError(it)}" }
+            reportMissingMethod(host, sub.key, targetLabel, required, detail)
         }
+        return anyHooked
     }
 
     fun hookFilterPkgCollection(
@@ -324,17 +291,45 @@ internal object HookSupport {
         return pkg.takeIf { it.contains('.') }
     }
 
-    private fun formatParams(method: Method): String =
-        method.parameterTypes.joinToString(",") { it.simpleName }
-
-    fun describeAvailableMethods(clazz: Class<*>, methodName: String): String {
-        val candidates = clazz.declaredMethods
-            .filter { it.name == methodName }
-            .map { "${it.name}(${formatParams(it)}):${it.returnType.simpleName}" }
-        return if (candidates.isEmpty()) {
-            "none on ${clazz.simpleName}"
-        } else {
-            "available=${candidates.joinToString("; ")}"
+    private fun registerMethod(
+        host: HookHost,
+        scopeKey: String,
+        target: String,
+        required: Boolean,
+        method: Method,
+        status: HookPointStatus = HookPointStatus.HOOKED,
+        block: (XposedInterface.Chain) -> Any?,
+    ): Boolean {
+        runCatching { host.interceptMethod(method, block) }.getOrElse { tr ->
+            reportHookError(host, scopeKey, target, required, tr)
+            return false
         }
+        host.recordDiagnostic(HookDiagnosticEntry(scopeKey, target, required, status))
+        return true
+    }
+
+    private fun reportMissingMethod(host: HookHost, scopeKey: String, target: String, required: Boolean, detail: String) {
+        host.recordDiagnostic(HookDiagnosticEntry(scopeKey, target, required, HookPointStatus.MISSING_METHOD, detail))
+        host.logMsg(if (required) Log.WARN else Log.INFO, "Missing method $target: $detail")
+    }
+
+    private fun reportHookError(host: HookHost, scopeKey: String, target: String, required: Boolean, tr: Throwable) {
+        host.recordDiagnostic(HookDiagnosticEntry(scopeKey, target, required, HookPointStatus.ERROR, describeError(tr)))
+        host.logMsg(Log.ERROR, "Hook failed $target", tr)
+    }
+
+    private fun describeError(tr: Throwable): String =
+        "${tr.javaClass.simpleName}: ${tr.message.orEmpty()}"
+
+    private fun formatParams(types: Array<out Class<*>?>): String =
+        types.joinToString(",") { it?.typeName ?: "?" }
+
+    private fun formatSignature(method: Method): String =
+        "${method.name}(${formatParams(method.parameterTypes)}):${method.returnType.typeName}"
+
+    private fun describeAvailableMethods(methods: Array<Method>, methodName: String): String {
+        val candidates = methods.filter { it.name == methodName }.map(::formatSignature)
+        return if (candidates.isEmpty()) "no declarations with this name"
+        else "available=${candidates.joinToString("; ")}"
     }
 }

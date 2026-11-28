@@ -328,6 +328,7 @@ class BgControlModelsTest {
         val okEntry = HookDiagnosticEntry("athena", "OplusAthenaAmManager#skipCacheEmptyKill", true, HookPointStatus.HOOKED, "ProcessRecord")
         val optMiss = HookDiagnosticEntry("battery_doze", "DeviceIdleController#legacy", false, HookPointStatus.MISSING_METHOD, "none")
         val reqMiss = HookDiagnosticEntry("athena", "OplusAthenaAmManager#doProactiveClean", true, HookPointStatus.MISSING_METHOD, "available=doProactiveClean(String)")
+        val fallback = HookDiagnosticEntry("broadcast_restrict", "OplusListManagerImpl#isSkipBroadcastFlagRestricted(java.lang.String)", true, HookPointStatus.FALLBACK)
 
         assertEquals(okEntry, HookDiagnosticEntry.decode(okEntry.encode()))
         assertEquals(reqMiss, HookDiagnosticEntry.decode(reqMiss.encode()))
@@ -338,7 +339,7 @@ class BgControlModelsTest {
                 BgSubsystem.ATHENA_RECENT.key to true,
                 BgSubsystem.BATTERY_DOZE.key to true,
             ),
-            hookDiagnostics = listOf(okEntry, optMiss, reqMiss),
+            hookDiagnostics = listOf(okEntry, optMiss, reqMiss, fallback),
             deviceSummary = "OPD2413 | Android 16 (SDK 36)",
         )
 
@@ -353,5 +354,6 @@ class BgControlModelsTest {
         assertTrue(report.contains("[athena][REQ] OplusAthenaAmManager#doProactiveClean -> missing_method"))
         assertTrue(report.contains("Optional Variants Unmatched (1):"))
         assertTrue(report.contains("[battery_doze][OPT] DeviceIdleController#legacy -> missing_method"))
+        assertTrue(report.contains("[broadcast_restrict] OplusListManagerImpl#isSkipBroadcastFlagRestricted(java.lang.String)"))
     }
 }

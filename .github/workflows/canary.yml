@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version_suffix:
-        description: "Optional version suffix (defaults to -canary.<short_sha>)"
+        description: "Optional suffix starting with '-', followed by letters, digits, dots, underscores, or hyphens (defaults to -canary.<short_sha>)"
         required: false
         default: ""
 
@@ -44,11 +44,16 @@ jobs:
 
       - name: Resolve Canary metadata
         id: meta
+        shell: bash
+        env:
+          SUFFIX: ${{ inputs.version_suffix }}
         run: |
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          SUFFIX="${{ inputs.version_suffix }}"
           if [ -z "$SUFFIX" ]; then
             SUFFIX="-canary.${SHORT_SHA}"
+          elif [[ ! "$SUFFIX" =~ ^-[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+            echo "::error::Invalid version suffix; use a leading hyphen followed by letters, digits, dots, underscores, or hyphens."
+            exit 1
           fi
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
@@ -59,12 +64,12 @@ jobs:
       - name: Build Canary APK
         id: build
         env:
+          SUFFIX: ${{ steps.meta.outputs.suffix }}
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          SUFFIX="${{ steps.meta.outputs.suffix }}"
           if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$RELEASE_STORE_PASSWORD" ] && [ -n "$RELEASE_KEY_ALIAS" ]; then
             echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             export RELEASE_STORE_FILE="$RUNNER_TEMP/release.jks"
@@ -100,11 +105,15 @@ jobs:
           retention-days: 14
 
       - name: Write build summary
+        env:
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          APK_NAME: ${{ steps.build.outputs.apk_name }}
+          SIGNED: ${{ steps.build.outputs.signed }}
         run: |
           {
             echo "### Canary Build Ready"
-            echo "- Commit: \`${{ steps.meta.outputs.short_sha }}\`"
-            echo "- Artifact: \`${{ steps.build.outputs.apk_name }}\`"
-            echo "- Signed Release: \`${{ steps.build.outputs.signed }}\`"
+            printf '%s\n' "- Commit: \`$SHORT_SHA\`"
+            printf '%s\n' "- Artifact: \`$APK_NAME\`"
+            printf '%s\n' "- Signed Release: \`$SIGNED\`"
             echo "- Tests: \`testDebugUnitTest\` passed"
           } >> "$GITHUB_STEP_SUMMARY"

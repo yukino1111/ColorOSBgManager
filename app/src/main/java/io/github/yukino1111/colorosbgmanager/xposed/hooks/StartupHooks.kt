@@ -3,7 +3,6 @@ package io.github.yukino1111.colorosbgmanager.xposed.hooks
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.ResolveInfo
-import android.os.Handler
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
 import io.github.yukino1111.colorosbgmanager.xposed.HookHost
@@ -55,45 +54,39 @@ internal object StartupHooks {
                 val prClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ProcessRecord", scope, required = true)
                 val srClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ServiceRecord", scope, required = false)
 
-                if (amsClass != null && prClass != null) {
-                    if (HookSupport.hookSingle(
-                            host = host,
-                            scopeKey = scope,
-                            clazz = mgrClass,
-                            methodName = "shouldPreventStartProcess",
-                            amsClass,
-                            prClass,
-                            required = true,
-                        ) { chain ->
-                            if (host.amsInstance == null) host.amsInstance = chain.getArg(0)
-                            val pr = chain.getArg(1)
-                            val pkg = SystemObjectAdapters.extractProcessPkg(pr)
-                            val userId = SystemObjectAdapters.extractProcessUserId(pr)
-                            val hostingType = SystemObjectAdapters.extractHostingType(pr)
-                            val isActivity = hostingType?.contains("activity", ignoreCase = true) == true
-                            if (!isActivity) {
-                                val autoMode = host.modeFor(pkg, userId, BgSubsystem.AUTO_START)
-                                val assocMode = host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
-                                if (autoMode.isRestrict || assocMode.isRestrict) {
-                                    val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
-                                    host.recordEvent(pkg, sub, "prevent_start_proc", hostingType ?: "bg", userId)
-                                    return@hookSingle true
-                                }
-                                if (autoMode == PolicyMode.FORCE_ALLOW) {
-                                    return@hookSingle false
-                                }
-                            }
-                            chain.proceed()
-                        }
-                    ) {
-                        anyOk = true
+                val processListExt = HookSupport.loadClassOrNull(
+                    host, cl, "com.android.server.am.ProcessListExtImpl", scope, required = false,
+                )
+                val modernStartHooked = if (processListExt != null) {
+                    val hostingClass = HookSupport.loadClassOrNull(
+                        host, cl, "com.android.server.am.HostingRecord", scope, required = false,
+                    )
+                    HookSupport.hookSingle(
+                        host, scope, processListExt, "interceptStartProcessBeforePendingStartCheck",
+                        amsClass, prClass, hostingClass, required = false,
+                    ) { chain ->
+                        if (host.amsInstance == null) host.amsInstance = chain.getArg(0)
+                        val hostingType = SystemObjectAdapters.extractHostingRecordType(chain.getArg(2))
+                        resolveProcessStartDecision(host, chain.getArg(1), hostingType) ?: chain.proceed()
                     }
+                } else {
+                    false
+                }
+                if (modernStartHooked || HookSupport.hookSingle(
+                        host, scope, mgrClass, "shouldPreventStartProcess", amsClass, prClass,
+                    ) { chain ->
+                        if (host.amsInstance == null) host.amsInstance = chain.getArg(0)
+                        val pr = chain.getArg(1)
+                        resolveProcessStartDecision(host, pr, SystemObjectAdapters.extractHostingType(pr)) ?: chain.proceed()
+                    }
+                ) {
+                    anyOk = true
                 }
 
                 if (HookSupport.hookPkgBool(
                         host,
                         mgrClass,
-                        "shouldRestrictApp",
+                        "restrictApp",
                         String::class.java,
                         Int::class.javaPrimitiveType!!,
                         sub = BgSubsystem.AUTO_START,
@@ -113,7 +106,7 @@ internal object StartupHooks {
                     Int::class.javaPrimitiveType!!,
                     Int::class.javaPrimitiveType!!,
                     sub = BgSubsystem.AUTO_START,
-                    userIdArgIdx = 2,
+                    userIdArgIdx = 1,
                     restrictEventAction = "block_account_sync",
                 )
                 HookSupport.hookPkgBool(
@@ -153,35 +146,12 @@ internal object StartupHooks {
                     }
                 }
 
-                if (srClass != null) {
-                    HookSupport.hookSingle(
-                        host = host,
-                        scopeKey = scope,
-                        clazz = mgrClass,
-                        methodName = "handleServiceRestartReschedule",
-                        srClass,
-                        Handler::class.java,
-                        required = false,
-                    ) { chain ->
-                        val sr = chain.getArg(0)
-                        val pkg = SystemObjectAdapters.extractServiceRecordPkg(sr)
-                        val userId = SystemObjectAdapters.extractServiceRecordUserId(sr)
-                        val autoMode = host.modeFor(pkg, userId, BgSubsystem.AUTO_START)
-                        val assocMode = host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
-                        if (autoMode.isRestrict || assocMode.isRestrict) {
-                            val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
-                            host.recordEvent(pkg, sub, "block_restart_reschedule", "ServiceRecord", userId)
-                            return@hookSingle false
-                        }
-                        chain.proceed()
-                    }
-                }
             }
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ActiveServices", scope, required = false)
             ?.let { activeServicesClass ->
-                val srClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ServiceRecord", scope, required = false)
-                    ?: return@let
+                val srClass = HookSupport.loadClassOrNull(host, cl, "com.android.server.am.ServiceRecord", scope, required = true)
+                if (srClass != null) installQueuedServiceRestartHook(host, scope, activeServicesClass, srClass)
                 if (HookSupport.hookSingle(
                         host = host,
                         scopeKey = scope,
@@ -319,30 +289,41 @@ internal object StartupHooks {
                     }
                 }
 
-                if (bqClass != null && brClass != null && bfClass != null) {
-                    if (HookSupport.hookSingle(
+                if (HookSupport.hookSingle(
+                        host = host,
+                        scopeKey = scope,
+                        clazz = mgrClass,
+                        methodName = "shouldPreventSendReceiver",
+                        bqClass,
+                        brClass,
+                        ResolveInfo::class.java,
+                        bfClass,
+                        String::class.java,
+                        required = true,
+                    ) { chain ->
+                        resolvePreventReceiverDecision(
                             host = host,
-                            scopeKey = scope,
-                            clazz = mgrClass,
-                            methodName = "shouldPreventSendReceiver",
-                            bqClass,
-                            brClass,
-                            ResolveInfo::class.java,
-                            bfClass,
-                            String::class.java,
-                            required = true,
-                        ) { chain ->
-                            resolvePreventReceiverDecision(
-                                host = host,
-                                br = chain.getArg(1),
-                                ri = chain.getArg(2) as? ResolveInfo,
-                                bf = chain.getArg(3),
-                                argPkg = chain.getArg(4) as? String,
-                            )?.let { return@hookSingle it }
-                            chain.proceed()
-                        }
-                    ) {
-                        anyOk = true
+                            br = chain.getArg(1),
+                            ri = chain.getArg(2) as? ResolveInfo,
+                            bf = chain.getArg(3),
+                        )?.let { return@hookSingle it }
+                        chain.proceed()
+                    }
+                ) {
+                    anyOk = true
+                }
+
+                HookSupport.hookSingle(
+                    host, scope, mgrClass, "validStartProcessFromBroadcast",
+                    bqClass, brClass, String::class.java, Int::class.javaPrimitiveType!!,
+                    required = false,
+                ) { chain ->
+                    val pkg = chain.getArg(2) as? String
+                    val userId = chain.getArg(3) as Int
+                    if (host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START) == PolicyMode.FORCE_ALLOW) {
+                        false
+                    } else {
+                        chain.proceed()
                     }
                 }
 
@@ -363,7 +344,6 @@ internal object StartupHooks {
                             br = chain.getArg(0),
                             ri = chain.getArg(1) as? ResolveInfo,
                             bf = chain.getArg(2),
-                            argPkg = chain.getArg(3) as? String,
                         )?.let { return@hookSingle it }
                         chain.proceed()
                     }
@@ -404,16 +384,57 @@ internal object StartupHooks {
         return anyOk
     }
 
+    private fun resolveProcessStartDecision(host: HookHost, pr: Any?, hostingType: String?): Boolean? {
+        if (hostingType.isNullOrEmpty() || hostingType.contains("activity", ignoreCase = true)) return null
+        val pkg = SystemObjectAdapters.extractProcessPkg(pr)
+        val userId = SystemObjectAdapters.extractProcessUserId(pr)
+        val autoMode = host.modeFor(pkg, userId, BgSubsystem.AUTO_START)
+        val assocMode = host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START)
+        if (autoMode.isRestrict || assocMode.isRestrict) {
+            val sub = if (autoMode.isRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
+            host.recordEvent(pkg, sub, "prevent_start_proc", hostingType, userId)
+            return true
+        }
+        return if (autoMode == PolicyMode.FORCE_ALLOW) false else null
+    }
+
+    private fun installQueuedServiceRestartHook(host: HookHost, scope: String, activeServicesClass: Class<*>, srClass: Class<*>) {
+        val unschedule = SystemObjectAdapters.findDeclaredMethod(
+            activeServicesClass, "unscheduleServiceRestartLocked",
+            srClass, Int::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!,
+        ) ?: return
+        val getUid = SystemObjectAdapters.findDeclaredMethod(activeServicesClass, "getServiceUid", srClass) ?: return
+        HookSupport.hookSingle(
+            host, scope, activeServicesClass, "performServiceRestartLocked", srClass, required = false,
+        ) { chain ->
+            val sr = chain.getArg(0)
+            val pkg = SystemObjectAdapters.extractServiceRecordPkg(sr)
+            val userId = SystemObjectAdapters.extractServiceRecordUserId(sr)
+            val autoRestrict = host.modeFor(pkg, userId, BgSubsystem.AUTO_START).isRestrict
+            if (autoRestrict || host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START).isRestrict) {
+                val cancelled = runCatching {
+                    val uid = getUid.invoke(null, sr) as Int
+                    unschedule.invoke(chain.thisObject, sr, uid, true) == true
+                }.getOrDefault(false)
+                if (cancelled) {
+                    val sub = if (autoRestrict) BgSubsystem.AUTO_START else BgSubsystem.ASSOCIATE_START
+                    host.recordEvent(pkg, sub, "block_restart_reschedule", "ServiceRecord", userId)
+                    return@hookSingle null
+                }
+            }
+            chain.proceed()
+        }
+    }
+
     private fun resolvePreventReceiverDecision(
         host: HookHost,
         br: Any?,
         ri: ResolveInfo?,
         bf: Any?,
-        argPkg: String?,
     ): Boolean? {
         val resolvePkg = ri?.activityInfo?.packageName
         val filterPkg = SystemObjectAdapters.extractBroadcastFilterPkg(bf)
-        val targetPkg = resolvePkg ?: filterPkg ?: argPkg
+        val targetPkg = resolvePkg ?: filterPkg
         val userId = SystemObjectAdapters.extractReceiverUserId(ri, bf, br)
         return when (host.modeFor(targetPkg, userId, BgSubsystem.ASSOCIATE_START)) {
             PolicyMode.FORCE_ALLOW -> false

@@ -31,6 +31,7 @@ internal object SystemObjectAdapters {
     private val fieldCache = ConcurrentHashMap<Pair<Class<*>, String>, Field>()
     private val missingFieldCache = ConcurrentHashMap<Pair<Class<*>, String>, Boolean>()
     private val serviceAppFieldCache = ConcurrentHashMap<Class<*>, Field>()
+    private val serviceAppMethodCache = ConcurrentHashMap<Class<*>, Method>()
 
     @Volatile
     private var getHansPkgNameMethod: Method? = null
@@ -132,13 +133,17 @@ internal object SystemObjectAdapters {
 
     fun extractHostingType(pr: Any?): String? {
         if (pr == null) return null
-        val hm = processRecordHostingMethod ?: runCatching {
-            pr.javaClass.getMethod("getHostingRecord").also { processRecordHostingMethod = it }
-        }.getOrNull() ?: return null
-        val hosting = runCatching { hm.invoke(pr) }.getOrNull() ?: return null
-        val tm = hostingGetTypeMethod ?: runCatching {
-            hosting.javaClass.getMethod("getType").also { hostingGetTypeMethod = it }
-        }.getOrNull() ?: return null
+        val hm = processRecordHostingMethod
+            ?: findDeclaredMethod(pr.javaClass, "getHostingRecord")?.also { processRecordHostingMethod = it }
+            ?: return null
+        return extractHostingRecordType(runCatching { hm.invoke(pr) }.getOrNull())
+    }
+
+    fun extractHostingRecordType(hosting: Any?): String? {
+        if (hosting == null) return null
+        val tm = hostingGetTypeMethod
+            ?: findDeclaredMethod(hosting.javaClass, "getType")?.also { hostingGetTypeMethod = it }
+            ?: return null
         return runCatching { tm.invoke(hosting) as? String }.getOrNull()
     }
 
@@ -278,11 +283,18 @@ internal object SystemObjectAdapters {
     }
 
     fun extractServiceApp(sr: Any): Any? {
-        val f = serviceAppFieldCache[sr.javaClass]
-            ?: (findDeclaredField(sr.javaClass, "app") ?: findDeclaredField(sr.javaClass, "mHostProcess"))
-                ?.also { serviceAppFieldCache[sr.javaClass] = it }
+        val clazz = sr.javaClass
+        val getter = serviceAppMethodCache[clazz]
+            ?: findPublicMethod(clazz, "getHostProcess")?.also { serviceAppMethodCache[clazz] = it }
+        if (getter != null) {
+            val host = runCatching { getter.invoke(sr) }
+            if (host.isSuccess) return host.getOrNull()
+        }
+        val field = serviceAppFieldCache[clazz]
+            ?: (findDeclaredField(clazz, "mHostProcess") ?: findDeclaredField(clazz, "app"))
+                ?.also { serviceAppFieldCache[clazz] = it }
             ?: return null
-        return runCatching { f.get(sr) }.getOrNull()
+        return runCatching { field.get(sr) }.getOrNull()
     }
 
     fun extractBroadcastFilterPkg(obj: Any?): String? {

@@ -166,8 +166,7 @@ internal object SystemTelemetryHelper {
                         val pkg = SystemObjectAdapters.extractServiceRecordPkg(sr) ?: continue
                         val uid = SystemObjectAdapters.extractServiceRecordUserId(sr, userKey)
                         val shortName = extractServiceShortName(sr) ?: continue
-                        val appObj = SystemObjectAdapters.extractServiceApp(sr) ?: continue
-                        val pid = extractProcessPid(appObj)
+                        val pid = extractProcessPid(SystemObjectAdapters.extractServiceApp(sr))
                         byApp.getOrPut(pkg to uid) { ArrayList() }.add(shortName)
                         if (pid > 0) {
                             byPid.getOrPut(pid) { ArrayList() }.add(shortName)

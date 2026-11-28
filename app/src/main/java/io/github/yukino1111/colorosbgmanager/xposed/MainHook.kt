@@ -228,23 +228,35 @@ class MainHook : XposedModule(), HookHost {
         if (!hooked.compareAndSet(false, true)) return
         installSettingsBridgeWatcher()
         installSettingsBridge(classLoader)
-        SystemLifecycleHooks.install(this, classLoader)
-
-        val installs = listOf(
-            BgSubsystem.HANS_FREEZE.key to HansHooks.install(this, classLoader),
-            BgSubsystem.AUTO_START.key to StartupHooks.installAutoStart(this, classLoader),
-            BgSubsystem.ASSOCIATE_START.key to StartupHooks.installAssociateStart(this, classLoader),
-            BgSubsystem.BATTERY_DOZE.key to BatteryDozeHooks.install(this, classLoader),
-            BgSubsystem.ATHENA_RECENT.key to AthenaHooks.install(this, classLoader, removeTaskDepth),
-            BgSubsystem.CPU_LIMIT.key to CpuLimitHooks.install(this, classLoader),
-            BgSubsystem.DOZE_NET.key to DozeNetHooks.install(this, classLoader),
-            BgSubsystem.BROADCAST_RESTRICT.key to BroadcastHooks.install(this, classLoader),
-        )
-        installs.forEach { (key, anyOk) ->
-            hookStatus[key] = anyOk && diagnostics.isScopeActive(key)
+        installGuarded("lifecycle") {
+            SystemLifecycleHooks.install(this, classLoader)
         }
+
+        installSubsystem(BgSubsystem.HANS_FREEZE) { HansHooks.install(this, classLoader) }
+        installSubsystem(BgSubsystem.AUTO_START) { StartupHooks.installAutoStart(this, classLoader) }
+        installSubsystem(BgSubsystem.ASSOCIATE_START) { StartupHooks.installAssociateStart(this, classLoader) }
+        installSubsystem(BgSubsystem.BATTERY_DOZE) { BatteryDozeHooks.install(this, classLoader) }
+        installSubsystem(BgSubsystem.ATHENA_RECENT) { AthenaHooks.install(this, classLoader, removeTaskDepth) }
+        installSubsystem(BgSubsystem.CPU_LIMIT) { CpuLimitHooks.install(this, classLoader) }
+        installSubsystem(BgSubsystem.DOZE_NET) { DozeNetHooks.install(this, classLoader) }
+        installSubsystem(BgSubsystem.BROADCAST_RESTRICT) { BroadcastHooks.install(this, classLoader) }
         log(Log.INFO, TAG, "Loaded in system_server: hooks=$hookStatus")
     }
+
+    private inline fun installSubsystem(subsystem: BgSubsystem, install: () -> Boolean) {
+        val key = subsystem.key
+        val installed = installGuarded(key, install) == true
+        hookStatus[key] = installed || diagnostics.isScopeActive(key)
+    }
+
+    private inline fun <T> installGuarded(scope: String, install: () -> T): T? =
+        runCatching(install).getOrElse { tr ->
+            recordDiagnostic(
+                HookDiagnosticEntry(scope, "installer", true, HookPointStatus.ERROR, "${tr.javaClass.simpleName}: ${tr.message.orEmpty()}"),
+            )
+            logMsg(Log.ERROR, "Hook installer failed: $scope", tr)
+            null
+        }
 
     private fun installSettingsBridgeWatcher() {
         if (!attachWatcherHooked.compareAndSet(false, true)) return
@@ -549,9 +561,9 @@ class MainHook : XposedModule(), HookHost {
         return DozePolicyHelper.adjustWhitelistAppIds(orig, allowIds, restrictIds)
     }
 
-    override fun adjustDozePackages(orig: Array<*>?): Array<String> {
+    override fun adjustDozePackages(orig: Array<*>?, canAdd: (String) -> Boolean): Array<String> {
         val (allowPkgs, restrictPkgs) = collectDozeOverrideSets()
-        val installedAllow = allowPkgs.filterTo(LinkedHashSet()) { resolveAppIdForPkg(it) >= 10000 }
+        val installedAllow = allowPkgs.filterTo(LinkedHashSet()) { resolveAppIdForPkg(it) >= 10000 && canAdd(it) }
         return DozePolicyHelper.adjustWhitelistPackages(orig, installedAllow, restrictPkgs)
     }
 
