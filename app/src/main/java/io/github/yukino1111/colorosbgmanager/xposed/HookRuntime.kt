@@ -35,6 +35,8 @@ internal interface HookHost {
     fun modeFor(pkg: String?, userId: Int, sub: BgSubsystem): PolicyMode
     fun modeForFallback(pkg: String?, sub: BgSubsystem): PolicyMode
     fun uidHasMode(uid: Int, sub: BgSubsystem, target: PolicyMode): Boolean
+    fun resolvePackagesForUid(uid: Int): List<String>
+    fun resolvePkgUserForPid(pid: Int): Pair<String, Int>?
     fun recordEvent(pkg: String?, sub: BgSubsystem, action: String, detail: String = "", userId: Int = 0)
     fun resolveSystemContext(): Context?
     fun resolveAppIdForPkg(pkg: String): Int

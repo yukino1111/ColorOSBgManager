@@ -213,7 +213,7 @@ class MainHook : XposedModule(), HookHost {
         }.getOrNull()
     }
 
-    private fun resolvePackagesForUid(uid: Int): List<String> {
+    override fun resolvePackagesForUid(uid: Int): List<String> {
         uidPkgCache[uid]?.let { return it }
         val ctx = resolveSystemContext() ?: return emptyList()
         val pkgs = runCatching { ctx.packageManager?.getPackagesForUid(uid)?.toList() }.getOrNull().orEmpty()
@@ -221,6 +221,29 @@ class MainHook : XposedModule(), HookHost {
             uidPkgCache[uid] = pkgs
         }
         return pkgs
+    }
+
+    override fun resolvePkgUserForPid(pid: Int): Pair<String, Int>? {
+        if (pid <= 0) return null
+        val ams = amsInstance
+        if (ams != null) {
+            val fromPids = runCatching {
+                val pidsMap = SystemObjectAdapters.findDeclaredField(ams.javaClass, "mPidsSelfLocked")?.get(ams)
+                    ?: return@runCatching null
+                val getter = SystemObjectAdapters.findDeclaredMethod(pidsMap.javaClass, "get", Int::class.javaPrimitiveType!!)
+                    ?: pidsMap.javaClass.getMethod("get", Int::class.javaPrimitiveType)
+                val pr = synchronized(pidsMap) { getter.invoke(pidsMap, pid) } ?: return@runCatching null
+                val pkg = SystemObjectAdapters.extractProcessPkg(pr) ?: return@runCatching null
+                pkg to SystemObjectAdapters.extractProcessUserId(pr)
+            }.getOrNull()
+            if (fromPids != null) return fromPids
+        }
+        val am = resolveSystemContext()?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return null
+        val proc = runCatching { am.runningAppProcesses?.firstOrNull { it.pid == pid } }.getOrNull() ?: return null
+        val pkg = proc.pkgList?.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: proc.processName?.substringBefore(':')?.takeIf { it.isNotBlank() }
+            ?: return null
+        return pkg to MultiUserPackageHelper.userIdOfUid(proc.uid)
     }
 
     private fun installAllSystemHooks(classLoader: ClassLoader) {

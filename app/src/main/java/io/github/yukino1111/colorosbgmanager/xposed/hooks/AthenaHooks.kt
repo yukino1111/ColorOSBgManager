@@ -1,10 +1,12 @@
 package io.github.yukino1111.colorosbgmanager.xposed.hooks
 
 import android.content.Context
+import android.os.Bundle
 import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.PolicyMode
 import io.github.yukino1111.colorosbgmanager.xposed.HookHost
 import io.github.yukino1111.colorosbgmanager.xposed.HookSupport
+import io.github.yukino1111.colorosbgmanager.xposed.MultiUserPackageHelper
 import io.github.yukino1111.colorosbgmanager.xposed.SystemObjectAdapters
 
 internal object AthenaHooks {
@@ -285,6 +287,41 @@ internal object AthenaHooks {
                         anyOk = true
                     }
                 }
+
+                if (HookSupport.hookAllMatching(
+                        host = host,
+                        scopeKey = scope,
+                        clazz = osenseKillClass,
+                        methodName = "executeCommonExternalKill",
+                        required = false,
+                        predicate = {
+                            it.name == "executeCommonExternalKill" &&
+                                it.parameterCount == 1 &&
+                                it.parameterTypes[0] == Bundle::class.java
+                        },
+                    ) { method, chain ->
+                        val bundle = chain.getArg(0) as? Bundle
+                        if (bundle != null) {
+                            val uid = bundle.getInt("uid", -1)
+                            val pid = bundle.getInt("pid", -1)
+                            val reason = bundle.getString("reason") ?: "external"
+                            val blockedTarget = resolveExternalKillAllowTarget(host, uid, pid)
+                            if (blockedTarget != null) {
+                                host.recordEvent(
+                                    blockedTarget.first,
+                                    BgSubsystem.ATHENA_RECENT,
+                                    "skip_okill",
+                                    "ext:$reason",
+                                    blockedTarget.second,
+                                )
+                                return@hookAllMatching if (method.returnType == Boolean::class.javaPrimitiveType) false else null
+                            }
+                        }
+                        chain.proceed()
+                    }
+                ) {
+                    anyOk = true
+                }
             }
 
         HookSupport.loadClassOrNull(host, cl, "com.android.server.am.OplusHansManager", scope, required = false)
@@ -416,5 +453,23 @@ internal object AthenaHooks {
             }
 
         return anyOk
+    }
+
+    private fun resolveExternalKillAllowTarget(host: HookHost, uid: Int, pid: Int): Pair<String, Int>? {
+        val pidTarget = if (pid > 0) host.resolvePkgUserForPid(pid) else null
+        if (uid >= 0) {
+            if (!host.uidHasMode(uid, BgSubsystem.ATHENA_RECENT, PolicyMode.FORCE_ALLOW)) return null
+            val userId = pidTarget?.second ?: MultiUserPackageHelper.userIdOfUid(uid)
+            val pkg = pidTarget?.first ?: host.resolvePackagesForUid(uid).firstOrNull {
+                host.modeFor(it, userId, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW
+            } ?: return null
+            return pkg to userId
+        }
+        if (pidTarget != null &&
+            host.modeFor(pidTarget.first, pidTarget.second, BgSubsystem.ATHENA_RECENT) == PolicyMode.FORCE_ALLOW
+        ) {
+            return pidTarget
+        }
+        return null
     }
 }
