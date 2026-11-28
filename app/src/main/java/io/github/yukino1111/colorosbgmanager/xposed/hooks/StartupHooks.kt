@@ -403,7 +403,7 @@ internal object StartupHooks {
             activeServicesClass, "unscheduleServiceRestartLocked",
             srClass, Int::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!,
         ) ?: return
-        val getUid = SystemObjectAdapters.findDeclaredMethod(activeServicesClass, "getServiceUid", srClass) ?: return
+        val getUid = SystemObjectAdapters.findDeclaredMethod(activeServicesClass, "getServiceUid", srClass)
         HookSupport.hookSingle(
             host, scope, activeServicesClass, "performServiceRestartLocked", srClass, required = false,
         ) { chain ->
@@ -413,7 +413,9 @@ internal object StartupHooks {
             val autoRestrict = host.modeFor(pkg, userId, BgSubsystem.AUTO_START).isRestrict
             if (autoRestrict || host.modeFor(pkg, userId, BgSubsystem.ASSOCIATE_START).isRestrict) {
                 val cancelled = runCatching {
-                    val uid = getUid.invoke(null, sr) as Int
+                    val uid = (getUid?.invoke(null, sr) as? Int)
+                        ?: SystemObjectAdapters.extractServiceRecordUid(sr)
+                        ?: return@runCatching false
                     unschedule.invoke(chain.thisObject, sr, uid, true) == true
                 }.getOrDefault(false)
                 if (cancelled) {

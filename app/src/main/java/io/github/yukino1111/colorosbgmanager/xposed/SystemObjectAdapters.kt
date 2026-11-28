@@ -277,9 +277,15 @@ internal object SystemObjectAdapters {
         if (obj == null) return fallbackUserId
         val userId = runCatching { findDeclaredField(obj.javaClass, "userId")?.getInt(obj) }.getOrNull()
         if (userId != null) return userId
+        val uid = extractServiceRecordUid(obj) ?: return fallbackUserId
+        return MultiUserPackageHelper.userIdOfUid(uid)
+    }
+
+    fun extractServiceRecordUid(obj: Any?): Int? {
+        if (obj == null) return null
         val appInfo = runCatching { findDeclaredField(obj.javaClass, "appInfo")?.get(obj) as? ApplicationInfo }.getOrNull()
-            ?: return fallbackUserId
-        return MultiUserPackageHelper.userIdOfUid(appInfo.uid)
+        if (appInfo != null && appInfo.uid > 0) return appInfo.uid
+        return MultiUserPackageHelper.extractFieldInt(obj, "definingUid")?.takeIf { it > 0 }
     }
 
     fun extractServiceApp(sr: Any): Any? {

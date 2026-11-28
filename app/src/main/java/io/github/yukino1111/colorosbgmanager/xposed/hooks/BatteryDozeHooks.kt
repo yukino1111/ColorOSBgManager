@@ -278,11 +278,11 @@ internal object BatteryDozeHooks {
                             val callingUid = chain.getArg(0) as Int
                             val callingUserId = chain.getArg(1) as Int
                             val pm = runCatching { packageManagerField?.get(chain.thisObject) }.getOrNull()
-                            // Do not add a name the ROM filtered for this caller.
+                            // Do not add a name the ROM filtered for this caller; allow adding if visibility lookup is unavailable.
                             host.adjustDozePackages(orig) { pkg ->
-                                pkg in orig || (pm != null && visibilityFilter != null && runCatching {
+                                pkg in orig || pm == null || visibilityFilter == null || runCatching {
                                     visibilityFilter.invoke(pm, pkg, callingUid, callingUserId) == false
-                                }.getOrDefault(false))
+                                }.getOrDefault(true)
                             }
                         }
                     }
