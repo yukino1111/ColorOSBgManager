@@ -48,7 +48,16 @@ data class AppStrings(
     val nativeListsInactive: String,
     val sectionSubsystems: String,
     val hookOk: String,
+    val hookPartial: String,
     val hookMissing: String,
+    val diagnosticsButton: String,
+    val diagnosticsTitle: String,
+    val diagnosticsSummary: (Int, Int, Int, Int) -> String,
+    val diagnosticsAllOk: String,
+    val diagnosticsReqMissingHeader: (Int) -> String,
+    val diagnosticsOptMissingHeader: (Int) -> String,
+    val diagnosticsCopyReport: String,
+    val diagnosticsReportCopied: String,
     val systemCounts: (Int, Int) -> String,
     val moduleCounts: (Int, Int) -> String,
     val unmodified: String,
@@ -486,7 +495,22 @@ val ZhAppStrings = AppStrings(
     nativeListsInactive = "激活后可查看原厂名单",
     sectionSubsystems = "后台子系统",
     hookOk = "正常",
+    hookPartial = "部分挂载",
     hookMissing = "未挂载",
+    diagnosticsButton = "诊断",
+    diagnosticsTitle = "Hook 兼容性诊断",
+    diagnosticsSummary = { ok, total, reqMissing, optMissing ->
+        when {
+            reqMissing == 0 && optMissing == 0 -> "已挂载 $ok/$total 个 Hook 点 · 核心全部正常"
+            reqMissing == 0 -> "已挂载 $ok/$total 个 Hook 点 · 核心正常（可选兼容跳过 $optMissing）"
+            else -> "已挂载 $ok/$total 个 Hook 点 · 核心异常 $reqMissing · 可选跳过 $optMissing"
+        }
+    },
+    diagnosticsAllOk = "全部核心 Hook 点均已正常挂载",
+    diagnosticsReqMissingHeader = { count -> "核心缺失 / 异常 ($count)" },
+    diagnosticsOptMissingHeader = { count -> "可选兼容点未命中 ($count)" },
+    diagnosticsCopyReport = "复制兼容报告",
+    diagnosticsReportCopied = "兼容报告已复制到剪贴板",
     systemCounts = { white, black -> "系统 白 $white / 黑 $black" },
     moduleCounts = { allow, restrict -> "· 模块 放行 $allow / 管控 $restrict" },
     unmodified = "· 未调整",
@@ -653,7 +677,22 @@ val EnAppStrings = AppStrings(
     nativeListsInactive = "Available after activation",
     sectionSubsystems = "Subsystems",
     hookOk = "Active",
+    hookPartial = "Partial",
     hookMissing = "Unhooked",
+    diagnosticsButton = "Diagnose",
+    diagnosticsTitle = "Hook Compatibility",
+    diagnosticsSummary = { ok, total, reqMissing, optMissing ->
+        when {
+            reqMissing == 0 && optMissing == 0 -> "$ok/$total hook points active · All core OK"
+            reqMissing == 0 -> "$ok/$total hook points active · Core OK ($optMissing optional skipped)"
+            else -> "$ok/$total hook points active · $reqMissing core failed · $optMissing optional skipped"
+        }
+    },
+    diagnosticsAllOk = "All required hook points mounted cleanly",
+    diagnosticsReqMissingHeader = { count -> "Required Missing / Failed ($count)" },
+    diagnosticsOptMissingHeader = { count -> "Optional Variants Skipped ($count)" },
+    diagnosticsCopyReport = "Copy Report",
+    diagnosticsReportCopied = "Compatibility report copied",
     systemCounts = { white, black -> "Sys W $white / B $black" },
     moduleCounts = { allow, restrict -> "· Override Allow $allow / Restrict $restrict" },
     unmodified = "· Default",

@@ -10,7 +10,6 @@ import android.system.OsConstants
 import android.util.SparseArray
 import io.github.yukino1111.colorosbgmanager.model.ProcessDetailInfo
 import java.io.File
-import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,13 +30,6 @@ internal object SystemTelemetryHelper {
         Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
     }
 
-    private var amsServicesField: Field? = null
-    private var activeServicesMapField: Field? = null
-    private var serviceMapInstancesField: Field? = null
-    private var serviceRecordPkgField: Field? = null
-    private var serviceRecordUserField: Field? = null
-    private var serviceRecordShortField: Field? = null
-    private var serviceRecordAppField: Field? = null
     private var processRecordPidMethod: Method? = null
 
     fun buildProcessesBundle(ctx: Context, ams: Any?): Bundle {
@@ -158,27 +150,23 @@ internal object SystemTelemetryHelper {
         var collectedFromAms = false
         if (ams != null) {
             runCatching {
-                val svcField = amsServicesField ?: findDeclaredField(ams.javaClass, "mServices")?.also { amsServicesField = it }
+                val svcField = SystemObjectAdapters.findDeclaredField(ams.javaClass, "mServices")
                 val activeServices = svcField?.get(ams) ?: return@runCatching
-                val mapField = activeServicesMapField
-                    ?: findDeclaredField(activeServices.javaClass, "mServiceMap")
-                    ?: findDeclaredField(activeServices.javaClass, "mServiceMapByUser")
-                        ?.also { activeServicesMapField = it }
-                if (mapField != null && activeServicesMapField == null) activeServicesMapField = mapField
+                val mapField = SystemObjectAdapters.findDeclaredField(activeServices.javaClass, "mServiceMap")
+                    ?: SystemObjectAdapters.findDeclaredField(activeServices.javaClass, "mServiceMapByUser")
                 val sparse = mapField?.get(activeServices) as? SparseArray<*> ?: return@runCatching
                 for (i in 0 until sparse.size()) {
                     val userKey = sparse.keyAt(i)
                     val svcMap = sparse.valueAt(i) ?: continue
-                    val instField = serviceMapInstancesField
-                        ?: findDeclaredField(svcMap.javaClass, "mServicesByInstanceName")?.also { serviceMapInstancesField = it }
+                    val instField = SystemObjectAdapters.findDeclaredField(svcMap.javaClass, "mServicesByInstanceName")
                     val instMap = instField?.get(svcMap) as? Map<*, *> ?: continue
                     val records = synchronized(instMap) { instMap.values.toList() }
                     for (sr in records) {
                         if (sr == null) continue
-                        val pkg = extractServicePkg(sr) ?: continue
-                        val uid = extractServiceUserId(sr, userKey)
+                        val pkg = SystemObjectAdapters.extractServiceRecordPkg(sr) ?: continue
+                        val uid = SystemObjectAdapters.extractServiceRecordUserId(sr, userKey)
                         val shortName = extractServiceShortName(sr) ?: continue
-                        val appObj = extractServiceApp(sr) ?: continue
+                        val appObj = SystemObjectAdapters.extractServiceApp(sr) ?: continue
                         val pid = extractProcessPid(appObj)
                         byApp.getOrPut(pkg to uid) { ArrayList() }.add(shortName)
                         if (pid > 0) {
@@ -205,28 +193,13 @@ internal object SystemTelemetryHelper {
         }
     }
 
-    private fun extractServicePkg(sr: Any): String? {
-        val f = serviceRecordPkgField ?: findDeclaredField(sr.javaClass, "packageName")?.also { serviceRecordPkgField = it }
-        return runCatching { f?.get(sr) as? String }.getOrNull()
-    }
-
-    private fun extractServiceUserId(sr: Any, fallbackUserId: Int = 0): Int {
-        val f = serviceRecordUserField ?: findDeclaredField(sr.javaClass, "userId")?.also { serviceRecordUserField = it }
-        return runCatching { f?.getInt(sr) }.getOrNull() ?: fallbackUserId
-    }
-
     private fun extractServiceShortName(sr: Any): String? {
-        val f = serviceRecordShortField ?: findDeclaredField(sr.javaClass, "shortInstanceName")?.also { serviceRecordShortField = it }
+        val f = SystemObjectAdapters.findDeclaredField(sr.javaClass, "shortInstanceName")
         val s = runCatching { f?.get(sr) as? String }.getOrNull()
         if (!s.isNullOrBlank()) return s
-        val instField = findDeclaredField(sr.javaClass, "instanceName")
+        val instField = SystemObjectAdapters.findDeclaredField(sr.javaClass, "instanceName")
         val cn = runCatching { instField?.get(sr) as? android.content.ComponentName }.getOrNull()
         return cn?.shortClassName
-    }
-
-    private fun extractServiceApp(sr: Any): Any? {
-        val f = serviceRecordAppField ?: findDeclaredField(sr.javaClass, "app")?.also { serviceRecordAppField = it }
-        return runCatching { f?.get(sr) }.getOrNull()
     }
 
     private fun extractProcessPid(pr: Any?): Int {
@@ -287,14 +260,5 @@ internal object SystemTelemetryHelper {
         importance < ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "SVC"
         oomAdj >= 900 || importance >= ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "CCH"
         else -> "BG"
-    }
-
-    private fun findDeclaredField(clazz: Class<*>, name: String): Field? {
-        var cur: Class<*>? = clazz
-        while (cur != null) {
-            runCatching { return cur.getDeclaredField(name).apply { isAccessible = true } }
-            cur = cur.superclass
-        }
-        return null
     }
 }

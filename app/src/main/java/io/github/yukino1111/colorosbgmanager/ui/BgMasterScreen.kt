@@ -731,6 +731,7 @@ private fun DashboardTab(
     onRefreshAll: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
     val totalNativeCount = remember(state.snapshot) {
         state.snapshot.lists.values.sumOf { it.size }
     }
@@ -792,6 +793,14 @@ private fun DashboardTab(
                         ) {
                             Text(strings.recheck)
                         }
+                    } else if (state.snapshot.hookDiagnostics.isNotEmpty()) {
+                        FilledTonalButton(
+                            onClick = { showDiagnosticsDialog = true },
+                            shapes = ButtonDefaults.shapes(),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(strings.diagnosticsButton)
+                        }
                     }
                 }
             }
@@ -852,6 +861,7 @@ private fun DashboardTab(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 BgSubsystem.entries.forEach { subsystem ->
                     val hooked = state.snapshot.hookStatus[subsystem.key] ?: false
+                    val degraded = state.snapshot.isDegraded(subsystem)
                     val allowCount = state.rules.values.count { it[subsystem] == PolicyMode.FORCE_ALLOW }
                     val restrictCount = state.rules.values.count { it[subsystem]?.isRestrict == true }
                     val (nativeWhiteCount, nativeBlackCount) = remember(state.snapshot, subsystem) {
@@ -893,8 +903,12 @@ private fun DashboardTab(
                                         style = MaterialTheme.typography.titleSmallEmphasized,
                                     )
                                     StatusPill(
-                                        text = if (hooked) strings.hookOk else strings.hookMissing,
-                                        active = hooked,
+                                        text = when {
+                                            !hooked -> strings.hookMissing
+                                            degraded -> strings.hookPartial
+                                            else -> strings.hookOk
+                                        },
+                                        active = hooked && !degraded,
                                     )
                                 }
                                 Text(
@@ -1021,6 +1035,13 @@ private fun DashboardTab(
                 )
             }
         }
+    }
+
+    if (showDiagnosticsDialog) {
+        HookDiagnosticsDialog(
+            state = state,
+            onDismiss = { showDiagnosticsDialog = false },
+        )
     }
 }
 
@@ -2859,6 +2880,142 @@ private fun <T> ConnectedToggleRow(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun HookDiagnosticsDialog(
+    state: BgMasterUiState,
+    onDismiss: () -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    val context = LocalContext.current
+    val diags = state.snapshot.hookDiagnostics
+    val okCount = diags.count { it.status.isOk }
+    val reqFailed = diags.filter { it.required && !it.status.isOk }
+    val optFailed = diags.filter { !it.required && !it.status.isOk }
+    var showOptionalMisses by remember { mutableStateOf(false) }
+    val versionLabel = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(strings.diagnosticsTitle) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (state.snapshot.deviceSummary.isNotBlank()) {
+                    Text(
+                        text = state.snapshot.deviceSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = strings.diagnosticsSummary(okCount, diags.size, reqFailed.size, optFailed.size),
+                    style = MaterialTheme.typography.titleSmallEmphasized,
+                )
+                BgSubsystem.entries.forEach { sub ->
+                    val subDiags = state.snapshot.diagnosticsFor(sub.key)
+                    val subOk = subDiags.count { it.status.isOk }
+                    val subReqFail = subDiags.any { it.required && !it.status.isOk }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = strings.subsystemTitle(sub),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        StatusPill(
+                            text = "$subOk/${subDiags.size}",
+                            active = (state.snapshot.hookStatus[sub.key] == true) && !subReqFail,
+                        )
+                    }
+                }
+                if (reqFailed.isEmpty()) {
+                    Text(
+                        text = strings.diagnosticsAllOk,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    HorizontalDivider()
+                    Text(
+                        text = strings.diagnosticsReqMissingHeader(reqFailed.size),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    reqFailed.forEach { entry ->
+                        val detail = if (entry.detail.isNotBlank()) "\n${entry.detail}" else ""
+                        Text(
+                            text = "[${entry.scopeKey}][REQ] ${entry.target} (${entry.status.code})$detail",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (optFailed.isNotEmpty()) {
+                    HorizontalDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { showOptionalMisses = !showOptionalMisses }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = strings.diagnosticsOptMissingHeader(optFailed.size),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Icon(
+                            imageVector = if (showOptionalMisses) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    AnimatedVisibility(visible = showOptionalMisses) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            optFailed.forEach { entry ->
+                                val detail = if (entry.detail.isNotBlank()) "\n${entry.detail}" else ""
+                                Text(
+                                    text = "[${entry.scopeKey}][OPT] ${entry.target} (${entry.status.code})$detail",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.closeDialog)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val report = state.snapshot.formatCompatibilityReport(versionLabel, state.xposedApiVersion)
+                    copyToClipboard(context, "ColorOSBgManager_CompatReport", report)
+                    Toast.makeText(context, strings.diagnosticsReportCopied, Toast.LENGTH_SHORT).show()
+                },
+                shapes = ButtonDefaults.shapes(),
+            ) {
+                Text(strings.diagnosticsCopyReport)
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)

@@ -319,14 +319,117 @@ data class RootProcessInfo(
     val isKernelThread: Boolean,
 )
 
+enum class HookPointStatus(val code: String) {
+    HOOKED("hooked"),
+    FALLBACK("fallback"),
+    MISSING_METHOD("missing_method"),
+    MISSING_CLASS("missing_class"),
+    ERROR("error");
+
+    val isOk: Boolean get() = this == HOOKED || this == FALLBACK
+
+    companion object {
+        fun fromCode(code: String): HookPointStatus =
+            entries.firstOrNull { it.code == code } ?: ERROR
+    }
+}
+
+data class HookDiagnosticEntry(
+    val scopeKey: String,
+    val target: String,
+    val required: Boolean,
+    val status: HookPointStatus,
+    val detail: String = "",
+) {
+    fun encode(): String {
+        val cleanTarget = target.replace('\t', ' ').replace('\n', ' ')
+        val cleanDetail = detail.replace('\t', ' ').replace('\n', ' ')
+        return "$scopeKey\t$cleanTarget\t${if (required) 1 else 0}\t${status.code}\t$cleanDetail"
+    }
+
+    companion object {
+        fun decode(raw: String): HookDiagnosticEntry? {
+            val parts = raw.split('\t', limit = 5)
+            if (parts.size < 4) return null
+            val scopeKey = parts[0].trim()
+            val target = parts[1].trim()
+            if (scopeKey.isEmpty() || target.isEmpty()) return null
+            return HookDiagnosticEntry(
+                scopeKey = scopeKey,
+                target = target,
+                required = parts[2] == "1",
+                status = HookPointStatus.fromCode(parts[3].trim()),
+                detail = parts.getOrElse(4) { "" },
+            )
+        }
+    }
+}
+
 data class SystemSnapshot(
     val serverInjected: Boolean = false,
     val lists: Map<NativeListKind, Set<String>> = emptyMap(),
     val listActive: Map<NativeListKind, Boolean> = emptyMap(),
     val hookStatus: Map<String, Boolean> = emptyMap(),
+    val hookDiagnostics: List<HookDiagnosticEntry> = emptyList(),
+    val deviceSummary: String = "",
     val rawSnapshotTimestamp: Long = 0L,
 ) {
     fun isListActive(kind: NativeListKind): Boolean = listActive[kind] ?: true
+
+    fun diagnosticsFor(scopeKey: String): List<HookDiagnosticEntry> =
+        hookDiagnostics.filter { it.scopeKey == scopeKey }
+
+    fun isDegraded(subsystem: BgSubsystem): Boolean {
+        if (hookStatus[subsystem.key] != true) return false
+        return hookDiagnostics.any { it.scopeKey == subsystem.key && it.required && !it.status.isOk }
+    }
+
+    fun formatCompatibilityReport(appVersion: String, xposedApi: Int): String = buildString {
+        appendLine("ColorOSBgManager Compatibility Report")
+        appendLine("App: $appVersion | Xposed API: $xposedApi | Injected: $serverInjected")
+        if (deviceSummary.isNotBlank()) {
+            appendLine("Device: $deviceSummary")
+        }
+        appendLine("Subsystems:")
+        BgSubsystem.entries.forEach { sub ->
+            val diags = diagnosticsFor(sub.key)
+            val okCount = diags.count { it.status.isOk }
+            val reqFail = diags.count { it.required && !it.status.isOk }
+            val state = when {
+                hookStatus[sub.key] != true -> "UNHOOKED"
+                reqFail > 0 -> "DEGRADED"
+                else -> "ACTIVE"
+            }
+            appendLine("  - ${sub.key}: $state ($okCount/${diags.size} ok, reqMissing=$reqFail)")
+        }
+        val extraScopes = hookDiagnostics.map { it.scopeKey }.distinct()
+            .filter { key -> BgSubsystem.fromKey(key) == null }
+        extraScopes.forEach { scope ->
+            val diags = diagnosticsFor(scope)
+            val okCount = diags.count { it.status.isOk }
+            appendLine("  - $scope: $okCount/${diags.size} ok")
+        }
+        val reqFailed = hookDiagnostics.filter { it.required && !it.status.isOk }
+        val optFailed = hookDiagnostics.filter { !it.required && !it.status.isOk }
+        if (reqFailed.isNotEmpty()) {
+            appendLine("Required Missing/Failed (${reqFailed.size}):")
+            reqFailed.forEach { entry ->
+                val suffix = if (entry.detail.isNotBlank()) " | ${entry.detail}" else ""
+                appendLine("  - [${entry.scopeKey}][REQ] ${entry.target} -> ${entry.status.code}$suffix")
+            }
+        } else {
+            appendLine("Required Missing/Failed: 0")
+        }
+        if (optFailed.isNotEmpty()) {
+            appendLine("Optional Variants Unmatched (${optFailed.size}):")
+            optFailed.forEach { entry ->
+                val suffix = if (entry.detail.isNotBlank()) " | ${entry.detail}" else ""
+                appendLine("  - [${entry.scopeKey}][OPT] ${entry.target} -> ${entry.status.code}$suffix")
+            }
+        }
+        val totalNative = lists.values.sumOf { it.size }
+        appendLine("Native Lists: ${lists.count { it.value.isNotEmpty() }}/${NativeListKind.entries.size} non-empty, $totalNative total entries")
+    }.trimEnd()
 
     fun nativeStateFor(pkgName: String, subsystem: BgSubsystem): NativeState =
         nativeResolutionFor(pkgName, subsystem).state
@@ -432,11 +535,17 @@ data class SystemSnapshot(
                     put(key, hookBundle.getBoolean(key, false))
                 }
             }
+            val diagnostics = bundle.getStringArrayList("hook_diagnostics")
+                ?.mapNotNull { HookDiagnosticEntry.decode(it) }
+                .orEmpty()
+            val deviceSummary = bundle.getString("device_summary").orEmpty()
             return SystemSnapshot(
                 serverInjected = true,
                 lists = parsedLists,
                 listActive = parsedActive,
                 hookStatus = hooks,
+                hookDiagnostics = diagnostics,
+                deviceSummary = deviceSummary,
                 rawSnapshotTimestamp = bundle.getLong("timestamp", System.currentTimeMillis()),
             )
         }

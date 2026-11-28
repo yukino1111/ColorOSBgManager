@@ -14,11 +14,13 @@ android {
     }
 
     defaultConfig {
+        val ciVersionCode = providers.gradleProperty("VERSION_CODE_OVERRIDE").orNull?.toIntOrNull()
+        val ciVersionNameSuffix = providers.gradleProperty("VERSION_NAME_SUFFIX").orNull.orEmpty()
         applicationId = "io.github.yukino1111.colorosbgmanager"
         minSdk = 33
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.1.4"
+        versionCode = ciVersionCode ?: 7
+        versionName = "1.1.4$ciVersionNameSuffix"
     }
 
     androidResources {

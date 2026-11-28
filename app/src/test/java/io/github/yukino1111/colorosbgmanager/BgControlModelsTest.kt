@@ -6,6 +6,9 @@ import io.github.yukino1111.colorosbgmanager.model.BgSubsystem
 import io.github.yukino1111.colorosbgmanager.model.BridgeAppEntry
 import io.github.yukino1111.colorosbgmanager.model.DeviceUserInfo
 import io.github.yukino1111.colorosbgmanager.model.DozePolicyHelper
+import io.github.yukino1111.colorosbgmanager.model.GlobalRuleFlags
+import io.github.yukino1111.colorosbgmanager.model.HookDiagnosticEntry
+import io.github.yukino1111.colorosbgmanager.model.HookPointStatus
 import io.github.yukino1111.colorosbgmanager.model.NativeCpuTier
 import io.github.yukino1111.colorosbgmanager.model.NativeListKind
 import io.github.yukino1111.colorosbgmanager.model.NativeSource
@@ -318,5 +321,37 @@ class BgControlModelsTest {
         val encoded = RulesCodec.encodeSubsystemPreset(custom)
         assertEquals("hans,cpu_limit", encoded)
         assertEquals(custom, RulesCodec.decodeSubsystemPreset(encoded, RulesCodec.DEFAULT_ALLOW_PRESET))
+    }
+
+    @Test
+    fun hookDiagnostics_encodeDecodeAndDegradedReportWork() {
+        val okEntry = HookDiagnosticEntry("athena", "OplusAthenaAmManager#skipCacheEmptyKill", true, HookPointStatus.HOOKED, "ProcessRecord")
+        val optMiss = HookDiagnosticEntry("battery_doze", "DeviceIdleController#legacy", false, HookPointStatus.MISSING_METHOD, "none")
+        val reqMiss = HookDiagnosticEntry("athena", "OplusAthenaAmManager#doProactiveClean", true, HookPointStatus.MISSING_METHOD, "available=doProactiveClean(String)")
+
+        assertEquals(okEntry, HookDiagnosticEntry.decode(okEntry.encode()))
+        assertEquals(reqMiss, HookDiagnosticEntry.decode(reqMiss.encode()))
+
+        val snapshot = SystemSnapshot(
+            serverInjected = true,
+            hookStatus = mapOf(
+                BgSubsystem.ATHENA_RECENT.key to true,
+                BgSubsystem.BATTERY_DOZE.key to true,
+            ),
+            hookDiagnostics = listOf(okEntry, optMiss, reqMiss),
+            deviceSummary = "OPD2413 | Android 16 (SDK 36)",
+        )
+
+        assertTrue(snapshot.isDegraded(BgSubsystem.ATHENA_RECENT))
+        assertFalse(snapshot.isDegraded(BgSubsystem.BATTERY_DOZE))
+
+        val report = snapshot.formatCompatibilityReport("1.1.4 (7)", 102)
+        assertTrue(report.contains("OPD2413 | Android 16 (SDK 36)"))
+        assertTrue(report.contains("athena: DEGRADED"))
+        assertTrue(report.contains("battery_doze: ACTIVE"))
+        assertTrue(report.contains("Required Missing/Failed (1):"))
+        assertTrue(report.contains("[athena][REQ] OplusAthenaAmManager#doProactiveClean -> missing_method"))
+        assertTrue(report.contains("Optional Variants Unmatched (1):"))
+        assertTrue(report.contains("[battery_doze][OPT] DeviceIdleController#legacy -> missing_method"))
     }
 }
